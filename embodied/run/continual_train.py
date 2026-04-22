@@ -128,12 +128,12 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       loss_metrics = {}
       opt_metrics = {}
       for k, v in train_metrics.items():
-        if "loss" in k and "opt" not in k:
-          loss_metrics[k] = v
-        elif "opt" in k:
-          opt_metrics[k] = v
+        if "train/loss/" in k and "opt" not in k:
+          loss_metrics[k.replace('train/loss/', '')] = v
+        elif "train/opt/" in k:
+          opt_metrics[k.replace('train/opt/', '')] = v
         else:
-          train_metrics_new[k] = v
+          train_metrics_new[k.replace('train/', '')] = v
       logger.add(train_metrics_new, prefix='train')
       logger.add(loss_metrics, prefix='loss')
       logger.add(opt_metrics, prefix='opt')
