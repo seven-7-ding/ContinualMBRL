@@ -4,6 +4,7 @@ import chex
 import elements
 import embodied.jax
 import embodied.jax.nets as nn
+from embodied.jax.internal import stats
 import jax
 import jax.numpy as jnp
 import ninjax as nj
@@ -170,7 +171,7 @@ class Agent(embodied.jax.Agent):
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
-    losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
+    losses['reward'] = self.rew(inp, 2).loss(obs['reward'])
     con = f32(~obs['is_terminal'])
     if self.config.contdisc:
       con *= 1 - 1 / self.config.horizon
@@ -406,6 +407,7 @@ def imag_loss(
 
   roffset, rscale = retnorm(ret, update)
   adv = (ret - tarval[:, :-1]) / rscale
+  metrics.update(stats(adv, "advantage"))
   aoffset, ascale = advnorm(adv, update)
   adv_normed = (adv - aoffset) / ascale
   logpi = sum([v.logp(sg(act[k]))[:, :-1] for k, v in policy.items()])
@@ -422,19 +424,26 @@ def imag_loss(
       slowreg * value.loss(sg(slowvalue.pred())))[:, :-1]
 
   ret_normed = (ret - roffset) / rscale
-  metrics['adv'] = adv.mean()
-  metrics['adv_std'] = adv.std()
-  metrics['adv_mag'] = jnp.abs(adv).mean()
-  metrics['rew'] = rew.mean()
+  # metrics['adv'] = adv.mean()
+  # metrics['adv_std'] = adv.std()
+  # metrics['adv_mag'] = jnp.abs(adv).mean()
+  metrics.update(stats(adv, "normed_advantage"))
+  metrics["normed_advantage_abs_mean"] = jnp.abs(adv).mean()
+  # metrics['pred_rew'] = rew.mean()
+  metrics.update(stats(rew, "imag_reward"))
   metrics['con'] = con.mean()
-  metrics['ret'] = ret_normed.mean()
-  metrics['val'] = val.mean()
-  metrics['tar'] = tar_normed.mean()
+  # metrics['ret'] = ret_normed.mean()
+  metrics.update(stats(ret_normed, "imag_return"))
+  # metrics['val'] = val.mean()
+  metrics.update(stats(val, "value"))
+  # metrics['tar'] = tar_normed.mean()
+  metrics.update(stats(tar_normed, "value_target"))
   metrics['weight'] = weight.mean()
-  metrics['slowval'] = slowval.mean()
-  metrics['ret_min'] = ret_normed.min()
-  metrics['ret_max'] = ret_normed.max()
-  metrics['ret_rate'] = (jnp.abs(ret_normed) >= 1.0).mean()
+  # metrics['slowval'] = slowval.mean()
+  metrics.update(stats(slowval, "slow_value"))
+  # metrics['ret_min'] = ret_normed.min()
+  # metrics['ret_max'] = ret_normed.max()
+  metrics['return_outof_1_rate'] = (jnp.abs(ret_normed) >= 1.0).mean()
   for k in act:
     metrics[f'ent/{k}'] = ents[k].mean()
     if hasattr(policy[k], 'minent'):

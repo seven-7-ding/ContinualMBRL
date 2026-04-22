@@ -3,6 +3,7 @@ from functools import partial as bind
 
 import elements
 import embodied
+from embodied.jax.internal import stats
 import numpy as np
 
 
@@ -24,7 +25,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
   print(f'Train ratio: {should_train._ratio}, Batch steps: {batch_steps}, Train calls per step: {args.train_ratio / batch_steps}')
-  should_log = embodied.LocalClock(args.log_every)
+  # should_log = embodied.LocalClock(args.log_every)
+  should_log = elements.when.Every(args.log_every, initial=False)
   should_report = embodied.LocalClock(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
   # TODO: enable env switching.
@@ -54,7 +56,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       }, prefix='episode')
       rew = result.pop('rewards')
       if len(rew) > 1:
-        result['reward_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
+        result['delta_reward>0.01_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
+      result.update(stats(rew, "real_reward"))
       epstats.add(result)
 
   stream_train = iter(agent.stream(make_stream(replay, 'train')))
@@ -120,7 +123,20 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(agg.result(), prefix='report')
 
     if should_log(step):
-      logger.add(train_agg.result())
+      train_metrics = train_agg.result()
+      train_metrics_new = {}
+      loss_metrics = {}
+      opt_metrics = {}
+      for k, v in train_metrics.items():
+        if "loss" in k and "opt" not in k:
+          loss_metrics[k] = v
+        elif "opt" in k:
+          opt_metrics[k] = v
+        else:
+          train_metrics_new[k] = v
+      logger.add(train_metrics_new, prefix='train')
+      logger.add(loss_metrics, prefix='loss')
+      logger.add(opt_metrics, prefix='opt')
       logger.add(epstats.result(), prefix='epstats')
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')

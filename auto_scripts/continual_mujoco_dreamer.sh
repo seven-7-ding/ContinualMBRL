@@ -4,22 +4,25 @@
 cd /home/jiale/MBRL/ContinualMBRL
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(4 5 6 7)  # Modify to your available GPUs
+CUDA_DEVICES=(0 1 2 3 4 5 6 7)  # Modify to your available GPUs
 
 # Maximum runs per GPU
-MAX_RUNS_PER_GPU=2  # Adjust based on GPU memory
+MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
 
 # Task definitions
 # less_to_more: from easier to harder tasks
 # more_to_less: from harder to easier tasks  
 # random: random task order
 declare -A TASK_STRINGS=(
-    ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
-    ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
-    ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
+    # ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
+    # ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
+    # ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
+    ["less_to_more"]="finger_spin|fish_swim|hopper_hop"
+    ["more_to_less"]="hopper_hop|fish_swim|finger_spin"
+    ["random"]="fish_swim|finger_spin|hopper_hop|"
 )
 # Prefix for log directories
-PREFIX="dreamer_continual"
+PREFIX="dreamer_continual_short"
 
 # Model configuration
 MODEL_SIZE="size50m"  # Options: size1m, size12m, size50m, etc.

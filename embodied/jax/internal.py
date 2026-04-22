@@ -11,6 +11,26 @@ from jax.sharding import PartitionSpec as P
 
 from . import nets
 
+def stats(x, prefix=""):
+  if isinstance(x, np.ndarray):
+    met = {
+        f'{prefix}_mean': x.mean(),
+        f'{prefix}_std': x.std(),
+        f'{prefix}_min': x.min(),
+        f'{prefix}_max': x.max(),
+    }
+  elif isinstance(x, jnp.ndarray):
+    met = {
+        f'{prefix}_mean': x.mean(),
+        f'{prefix}_std': x.std(),
+        f'{prefix}_min': x.min(),
+        f'{prefix}_max': x.max(),
+    }
+  elif isinstance(x, (int, float)):
+    met = {prefix: x}
+  else:
+    raise ValueError(f'Unsupported type for stats: {type(x)}')
+  return met
 
 def setup(
     platform=None,

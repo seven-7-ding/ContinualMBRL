@@ -51,7 +51,7 @@ defaults:
     steps: 1e10
     duration: 0
     train_ratio: 32.0
-    log_every: 120
+    log_every: 10000
     report_every: 300
     save_every: 900
     envs: 16
@@ -83,7 +83,7 @@ defaults:
     train_devices: [0]
     mock_devices: 0
     prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.35  # 限制每个进程最多使用45%的GPU显存，多进程时推荐设置
+    memory_fraction: 0.4  # 限制每个进程最多使用45%的GPU显存，多进程时推荐设置
     jit: True
     debug: False
     expect_devices: 0
@@ -91,7 +91,7 @@ defaults:
     coordinator_address: ''
 
   agent:
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
+    loss_scales: {rec: 1.0, reward: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
