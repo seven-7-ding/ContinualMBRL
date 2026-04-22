@@ -197,7 +197,7 @@ dmc_vision:
 continual_dmc_vision:
   task: walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin
   env.continual_dmc.proprio: False
-  run: {steps: 5e6, task_repeat: 10, task_interval: 1e5, train_ratio: 256}
+  run: {steps: 5e8, task_repeat: 10, task_interval: 1e5, train_ratio: 256}
 
 bsuite:
   task: bsuite_mnist/0

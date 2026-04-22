@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(0 1 2 3 4 5 6 7)  # Modify to your available GPUs
+CUDA_DEVICES=(0 1 2 3 4 5 0 1 2 3 4 5)  # Modify to your available GPUs
 
 # Maximum runs per GPU
 MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
@@ -17,9 +17,9 @@ declare -A TASK_STRINGS=(
     # ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
     # ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
     # ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
-    ["less_to_more"]="finger_spin|fish_swim|hopper_hop"
-    ["more_to_less"]="hopper_hop|fish_swim|finger_spin"
-    ["random"]="fish_swim|finger_spin|hopper_hop|"
+    ["less_to_more"]="finger_spin|fish_swim|walker_walk"
+    ["more_to_less"]="walker_walk|fish_swim|finger_spin"
+    ["random"]="fish_swim|finger_spin|walker_walk|"
 )
 # Prefix for log directories
 PREFIX="dreamer_continual_short"
@@ -32,7 +32,7 @@ BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=256
-TASK_INTERVAL=100000  # Modify as needed
+TASK_INTERVAL=200000  # Modify as needed
 
 # ============= Settings Definition =============
 # Format: "task_type|seed"
@@ -46,9 +46,9 @@ declare -a SETTINGS=(
     "more_to_less|2000"
     "more_to_less|3000"
     
-    # "random|1000"
-    # "random|2000"
-    # "random|3000"
+    "random|1000"
+    "random|2000"
+    "random|3000"
 )
 
 # ============= Initialize =============
