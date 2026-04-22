@@ -10,7 +10,6 @@ from . import chunk as chunklib
 from . import limiters
 from . import selectors
 
-
 class Replay:
 
   def __init__(
@@ -72,6 +71,32 @@ class Replay:
     for key in self.metrics:
       self.metrics[key] = 0
     return stats
+
+  def clear(self):
+    """Clear all transitions from the replay buffer."""
+    with self.rwlock.writing:
+      # Clear all data structures
+      self.chunks.clear()
+      with self.refs_lock:
+        self.refs.clear()
+      self.items.clear()
+      self.fifo.clear()
+      self.itemid = 0
+      self.current.clear()
+      self.streams.clear()
+      
+      # Clear sampler (calls its internal clear method if available)
+      if hasattr(self.sampler, 'clear'):
+        self.sampler.clear()
+      
+      # Clear online mode structures if applicable
+      if self.online:
+        self.lengths.clear()
+        self.queue.clear()
+      
+      # Optionally reset metrics
+      for key in self.metrics:
+        self.metrics[key] = 0
 
   @elements.timer.section('replay_add')
   def add(self, step, worker=0):

@@ -18,6 +18,7 @@ def setup(
     debug=False,
     jit=True,
     prealloc=False,
+    memory_fraction=None,  # 新增：显存分配比例，例如 0.5 表示只使用 50% 的显存
     mock_devices=0,
     transfer_guard=True,
     deterministic=True,
@@ -37,6 +38,10 @@ def setup(
   if transfer_guard and jit and not debug_nans:
     jax.config.update('jax_transfer_guard', 'disallow')
   os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = str(bool(prealloc)).lower()
+  # 设置显存分配比例（无论是否预分配都有效）
+  if memory_fraction is not None:
+    assert 0.0 < memory_fraction <= 1.0, f"memory_fraction must be in (0, 1], got {memory_fraction}"
+    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = str(memory_fraction)
   jax.config.update('jax_debug_nans', debug_nans)
   jax.config.update('jax_enable_compilation_cache', compilation_cache)
 

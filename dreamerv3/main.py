@@ -1,3 +1,4 @@
+import ast
 import importlib
 import os
 import pathlib
@@ -8,6 +9,8 @@ folder = pathlib.Path(__file__).parent
 sys.path.insert(0, str(folder.parent))
 sys.path.insert(1, str(folder.parent.parent))
 __package__ = folder.name
+os.environ['MUJOCO_GL'] = 'egl'
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 import elements
 import embodied
@@ -29,9 +32,22 @@ def main(argv=None):
   config = elements.Flags(config).parse(other)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
+  # if '|' in config.task:
+  #   # Remove brackets and parse comma-separated items
+  #   # config.task = walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin
+  #   task_str = config.task.strip('|')
+  #   tasks = [task.strip() for task in task_str.split('|')]
+  #   full_tasks = []
+  #   for task in tasks:
+  #     full_tasks += [task] * config.run.envs
+  #   full_tasks = full_tasks * config.run.task_repeat
+  #   config = config.update(dict(task="|".join(full_tasks)))
+  print('tasks:', config.task)
 
   if 'JOB_COMPLETION_INDEX' in os.environ:
     config = config.update(replica=int(os.environ['JOB_COMPLETION_INDEX']))
+  os.environ["MUJOCO_EGL_DEVICE_ID"] = str(config.egl_device)
+  print(f"Assigned MUJOCO_EGL_DEVICE_ID: {os.environ['MUJOCO_EGL_DEVICE_ID']}")
   print('Replica:', config.replica, '/', config.replicas)
 
   logdir = elements.Path(config.logdir)
@@ -67,6 +83,15 @@ def main(argv=None):
 
   if config.script == 'train':
     embodied.run.train(
+        bind(make_agent, config),
+        bind(make_replay, config, 'replay'),
+        bind(make_env, config),
+        bind(make_stream, config),
+        bind(make_logger, config),
+        args)
+    
+  elif config.script == 'continual_train':
+    embodied.run.continual_train(
         bind(make_agent, config),
         bind(make_replay, config, 'replay'),
         bind(make_env, config),
@@ -152,7 +177,12 @@ def make_agent(config):
 def make_logger(config):
   step = elements.Counter()
   logdir = config.logdir
-  multiplier = config.env.get(config.task.split('_')[0], {}).get('repeat', 1)
+  # Handle both list and string task types
+  if "|" in config.task:
+    task_prefix = 'continual_dmc'  # Default prefix for continual learning
+  else:
+    task_prefix = config.task.split('_')[0]
+  multiplier = config.env.get(task_prefix, {}).get('repeat', 1)
   outputs = []
   outputs.append(elements.logger.TerminalOutput(config.logger.filter, 'Agent'))
   for output in config.logger.outputs:
@@ -170,8 +200,17 @@ def make_logger(config):
       outputs.append(elements.logger.ExpaOutput(
           exp, run, proj, config.logger.user, config.flat))
     elif output == 'wandb':
-      name = '/'.join(logdir.split('/')[-4:])
-      outputs.append(elements.logger.WandBOutput(name))
+      items = logdir.split('/')[-3:]
+      project = items[0]
+      group = items[1]
+      name = items[2]
+      wandb_dir = logdir + '/wandb'
+      os.makedirs(wandb_dir, exist_ok=True)
+      outputs.append(elements.logger.WandBOutput(
+        name=name,
+        project=project,
+        group=group,
+        dir=wandb_dir,))
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
     else:
@@ -209,29 +248,44 @@ def make_replay(config, folder, mode='train'):
   return embodied.replay.Replay(**kwargs)
 
 
-def make_env(config, index, **overrides):
-  suite, task = config.task.split('_', 1)
-  if suite == 'memmaze':
-    from embodied.envs import from_gym
-    import memory_maze  # noqa
-  ctor = {
-      'dummy': 'embodied.envs.dummy:Dummy',
-      'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dmenv:FromDM',
-      'crafter': 'embodied.envs.crafter:Crafter',
-      'dmc': 'embodied.envs.dmc:DMC',
-      'atari': 'embodied.envs.atari:Atari',
-      'atari100k': 'embodied.envs.atari:Atari',
-      'dmlab': 'embodied.envs.dmlab:DMLab',
-      'minecraft': 'embodied.envs.minecraft:Minecraft',
-      'loconav': 'embodied.envs.loconav:LocoNav',
-      'pinpad': 'embodied.envs.pinpad:PinPad',
-      'langroom': 'embodied.envs.langroom:LangRoom',
-      'procgen': 'embodied.envs.procgen:ProcGen',
-      'bsuite': 'embodied.envs.bsuite:BSuite',
-      'memmaze': lambda task, **kw: from_gym.FromGym(
-          f'MemoryMaze-{task}-v0', **kw),
-  }[suite]
+def make_env(config, index, switch_count=0, **overrides):
+  if "|" in config.task:
+    from embodied.envs.general_dmc import GeneralDMC
+    ctor = GeneralDMC
+    suite = "continual_dmc"
+    tasks = config.task.split('|')
+    task = tasks[switch_count % len(tasks)].strip()
+    kwargs = config.env.get(suite, {})
+    kwargs.update(overrides)
+    if kwargs.pop('use_seed', False):
+      kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+    if kwargs.pop('use_logdir', False):
+      kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
+    env = ctor(task, **kwargs)
+    return wrap_env(env, config)
+  else:
+    suite, task = config.task.split('_', 1)
+    if suite == 'memmaze':
+      from embodied.envs import from_gym
+      import memory_maze  # noqa
+    ctor = {
+        'dummy': 'embodied.envs.dummy:Dummy',
+        'gym': 'embodied.envs.from_gym:FromGym',
+        'dm': 'embodied.envs.from_dmenv:FromDM',
+        'crafter': 'embodied.envs.crafter:Crafter',
+        'dmc': 'embodied.envs.dmc:DMC',
+        'atari': 'embodied.envs.atari:Atari',
+        'atari100k': 'embodied.envs.atari:Atari',
+        'dmlab': 'embodied.envs.dmlab:DMLab',
+        'minecraft': 'embodied.envs.minecraft:Minecraft',
+        'loconav': 'embodied.envs.loconav:LocoNav',
+        'pinpad': 'embodied.envs.pinpad:PinPad',
+        'langroom': 'embodied.envs.langroom:LangRoom',
+        'procgen': 'embodied.envs.procgen:ProcGen',
+        'bsuite': 'embodied.envs.bsuite:BSuite',
+        'memmaze': lambda task, **kw: from_gym.FromGym(
+            f'MemoryMaze-{task}-v0', **kw),
+    }[suite]
   if isinstance(ctor, str):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
@@ -243,6 +297,29 @@ def make_env(config, index, **overrides):
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
+
+  ## Check each dmc envs.
+  {# for task in [
+  #   "walker_walk",
+  #   "quadruped_run",
+  #   "quadruped_walk",
+  #   "reacher_easy",
+  #   "reacher_hard",
+  #   "hopper_stand",
+  #   "hopper_hop",
+  #   "fish_swim",
+  #   "fish_upright",
+  #   "finger_turn_easy",
+  #   "finger_turn_hard",
+  #   "finger_spin"
+  # ]:
+  #   print(f"Applying DreamerV3 wrappers to {task}...")
+  #   module = importlib.import_module('embodied.envs.dmc')
+  #   cls = getattr(module, 'DMC')
+  #   env = cls(task, **kwargs)
+  #   print(f"Action space: {env.act_space}")
+  #   print(f"Observation space: {env.obs_space}")
+  }
   return wrap_env(env, config)
 
 

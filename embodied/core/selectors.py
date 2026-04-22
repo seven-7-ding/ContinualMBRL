@@ -15,6 +15,10 @@ class Fifo:
   def __len__(self):
     return len(self.queue)
 
+  def clear(self):
+    """Clear all stored data."""
+    self.queue = collections.deque()
+
   def __setitem__(self, key, stepids):
     self.queue.append(key)
 
@@ -29,6 +33,7 @@ class Fifo:
 class Uniform:
 
   def __init__(self, seed=0):
+    self.seed = seed
     self.indices = {}
     self.keys = []
     self.rng = np.random.default_rng(seed)
@@ -36,6 +41,13 @@ class Uniform:
 
   def __len__(self):
     return len(self.keys)
+
+  def clear(self):
+    """Clear all stored data while keeping the same seed."""
+    with self.lock:
+      self.indices = {}
+      self.keys = []
+      self.rng = np.random.default_rng(self.seed)
 
   def __call__(self):
     with self.lock:
@@ -62,8 +74,17 @@ class Recency:
   def __init__(self, uprobs, seed=0):
     assert uprobs[0] >= uprobs[-1], uprobs
     self.uprobs = uprobs
+    self.seed = seed
     self.tree = self._build(uprobs)
     self.rng = np.random.default_rng(seed)
+    self.step = 0
+    self.steps = {}
+    self.items = {}
+
+  def clear(self):
+    """Clear all stored data."""
+    self.tree = self._build(self.uprobs)
+    self.rng = np.random.default_rng(self.seed)
     self.step = 0
     self.steps = {}
     self.items = {}
@@ -135,7 +156,16 @@ class Prioritized:
     self.initial = float(initial)
     self.zero_on_sample = zero_on_sample
     self.maxfrac = maxfrac
+    self.branching = branching
+    self.seed = seed
     self.tree = SampleTree(branching, seed)
+    self.prios = collections.defaultdict(lambda: self.initial)
+    self.stepitems = collections.defaultdict(list)
+    self.items = {}
+
+  def clear(self):
+    """Clear all stored data."""
+    self.tree = SampleTree(self.branching, self.seed)
     self.prios = collections.defaultdict(lambda: self.initial)
     self.stepitems = collections.defaultdict(list)
     self.items = {}
@@ -209,7 +239,15 @@ class Mixture:
     keys = sorted(selectors.keys())
     self.selectors = [selectors[key] for key in keys]
     self.fractions = np.array([fractions[key] for key in keys], np.float32)
+    self.seed = seed
     self.rng = np.random.default_rng(seed)
+
+  def clear(self):
+    """Clear all stored data from child selectors."""
+    for selector in self.selectors:
+      if hasattr(selector, 'clear'):
+        selector.clear()
+    self.rng = np.random.default_rng(self.seed)
 
   def __call__(self):
     return self.rng.choice(self.selectors, p=self.fractions)()
@@ -233,6 +271,7 @@ class SampleTree:
   def __init__(self, branching=16, seed=0):
     assert 2 <= branching
     self.branching = branching
+    self.seed = seed
     self.root = SampleTreeNode()
     self.last = None
     self.entries = {}
@@ -240,6 +279,13 @@ class SampleTree:
 
   def __len__(self):
     return len(self.entries)
+
+  def clear(self):
+    """Clear all stored data."""
+    self.root = SampleTreeNode()
+    self.last = None
+    self.entries = {}
+    self.rng = np.random.default_rng(self.seed)
 
   def insert(self, key, uprob):
     if not self.last:

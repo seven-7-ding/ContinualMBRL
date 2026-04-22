@@ -32,6 +32,30 @@ class Driver:
     self.carry = None
     self.reset()
 
+  def switch_envs(self, make_env_fns, parallel=True, **kwargs):
+    self.close()
+    assert len(make_env_fns) >= 1
+    self.parallel = parallel
+    self.kwargs = kwargs
+    self.length = len(make_env_fns)
+    if parallel:
+      import multiprocessing as mp
+      context = mp.get_context()
+      self.pipes, pipes = zip(*[context.Pipe() for _ in range(self.length)])
+      self.stop = context.Event()
+      fns = [cloudpickle.dumps(fn) for fn in make_env_fns]
+      self.procs = [
+          portal.Process(self._env_server, self.stop, i, pipe, fn, start=True)
+          for i, (fn, pipe) in enumerate(zip(fns, pipes))]
+      self.pipes[0].send(('act_space',))
+      self.act_space = self._receive(self.pipes[0])
+    else:
+      self.envs = [fn() for fn in make_env_fns]
+      self.act_space = self.envs[0].act_space
+    self.acts = None
+    self.carry = None
+    self.reset()
+
   def reset(self, init_policy=None):
     self.acts = {
         k: np.zeros((self.length,) + v.shape, v.dtype)

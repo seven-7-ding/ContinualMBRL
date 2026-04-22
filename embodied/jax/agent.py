@@ -73,7 +73,7 @@ class Agent(embodied.Agent):
     elements.print(f'JAX devices ({jax.device_count()}):', available)
     if self.jaxcfg.expect_devices > 0:
       if len(available) != self.jaxcfg.expect_devices:
-        print('ALERT: Wrong number of devices')
+        print(f'ALERT: Wrong number of devices, expected {self.jaxcfg.expect_devices} but got {len(available)}!')
         while True:
           time.sleep(1)
     assert len(available) == jax.process_count() * jax.local_device_count()

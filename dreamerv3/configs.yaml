@@ -6,7 +6,7 @@ defaults:
   method: name
   task: dummy_disc
   seed: 0
-  script: train
+  script: continual_train
   batch_size: 16
   batch_length: 64
   report_length: 32
@@ -18,9 +18,10 @@ defaults:
   clock_port: ''
   ipv6: False
   errfile: False
+  egl_device: "0"
 
   logger:
-    outputs: [jsonl, scope]
+    outputs: [jsonl, scope, wandb]
     filter: 'score|length|fps|ratio|train/loss/|train/rand/'
     timer: True
     fps: 15
@@ -34,6 +35,7 @@ defaults:
     dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
+    continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
 
   replay:
@@ -69,13 +71,19 @@ defaults:
     usage: {psutil: True, nvsmi: True, gputil: False, malloc: False, gc: False}
     debug: True
 
+    # TODO: additional configs for continual dmc_vision.
+    task_action_space: [6]
+    task_repeat: 10
+    task_interval: 1e5
+
   jax:
     platform: cuda
     compute_dtype: bfloat16
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: True
+    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    memory_fraction: 0.35  # 限制每个进程最多使用45%的GPU显存，多进程时推荐设置
     jit: True
     debug: False
     expect_devices: 0
@@ -186,6 +194,11 @@ dmc_vision:
   env.dmc.proprio: False
   run: {steps: 1.1e6, train_ratio: 256}
 
+continual_dmc_vision:
+  task: walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin
+  env.continual_dmc.proprio: False
+  run: {steps: 5e6, task_repeat: 10, task_interval: 1e5, train_ratio: 256}
+
 bsuite:
   task: bsuite_mnist/0
   run: {envs: 1, save_every: -1, train_ratio: 1024}
@@ -197,9 +210,9 @@ loconav:
 
 multicpu:
   batch_size: 12
-  jax.mock_devices: 8
-  jax.policy_devices: [0, 1]
-  jax.train_devices: [2, 3, 4, 5, 6, 7]
+  jax.mock_devices: 1
+  jax.policy_devices: [7]
+  jax.train_devices: [7]
 
 debug:
   batch_size: 8
