@@ -52,7 +52,7 @@ defaults:
     duration: 0
     train_ratio: 32.0
     log_every: 10000
-    report_every: 300
+    report_every: 20000
     save_every: 900
     envs: 16
     eval_envs: 4
@@ -83,7 +83,7 @@ defaults:
     train_devices: [0]
     mock_devices: 0
     prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.4  # 限制每个进程最多使用45%的GPU显存，多进程时推荐设置
+    memory_fraction: 0.35
     jit: True
     debug: False
     expect_devices: 0

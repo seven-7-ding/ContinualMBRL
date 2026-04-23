@@ -17,9 +17,9 @@ declare -A TASK_STRINGS=(
     # ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
     # ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
     # ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
-    ["less_to_more"]="finger_spin|fish_swim|walker_walk"
-    ["more_to_less"]="walker_walk|fish_swim|finger_spin"
-    ["random"]="fish_swim|finger_spin|walker_walk|"
+    ["less_to_more"]="pendulum_swingup|finger_spin|walker_walk"
+    ["more_to_less"]="walker_walk|finger_spin|pendulum_swingup"
+    ["random"]="finger_spin|pendulum_swingup|walker_walk|"
 )
 # Prefix for log directories
 PREFIX="dreamer_continual_short"
@@ -46,9 +46,9 @@ declare -a SETTINGS=(
     "more_to_less|2000"
     "more_to_less|3000"
     
-    "random|1000"
-    "random|2000"
-    "random|3000"
+    # "random|1000"
+    # "random|2000"
+    # "random|3000"
 )
 
 # ============= Initialize =============
