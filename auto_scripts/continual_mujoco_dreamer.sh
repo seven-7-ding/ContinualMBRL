@@ -22,7 +22,7 @@ declare -A TASK_STRINGS=(
     ["random"]="finger_spin|pendulum_swingup|walker_walk|"
 )
 # Prefix for log directories
-PREFIX="dreamer_continual_short"
+PREFIX="dreamer_continual_simple_short"
 
 # Model configuration
 MODEL_SIZE="size50m"  # Options: size1m, size12m, size50m, etc.

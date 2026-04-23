@@ -27,7 +27,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   print(f'Train ratio: {should_train._ratio}, Batch steps: {batch_steps}, Train calls per step: {args.train_ratio / batch_steps}')
   # should_log = embodied.LocalClock(args.log_every)
   should_log = elements.when.Every(args.log_every, initial=False)
-  should_report = embodied.when.Every(args.report_every)
+  should_report = elements.when.Every(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
   # TODO: enable env switching.
   should_switch = elements.when.Every(args.task_interval, initial=True)
