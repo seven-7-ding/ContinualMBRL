@@ -133,7 +133,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       for k, v in train_metrics.items():
         if "train/loss/" in k and "opt" not in k:
           loss_metrics[k.replace('train/loss/', '')] = v
-        elif "train/opt/" in k:
+        elif "train/opt/" in k and "grad_redo" not in k:
           opt_metrics[k.replace('train/opt/', '')] = v
         elif "train/act_redo/" in k:
           if not np.isnan(float(v)):

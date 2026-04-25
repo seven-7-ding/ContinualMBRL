@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-examine
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(0 1 2 3 4 5)  # Modify to your available GPUs
+CUDA_DEVICES=(3 4 5)  # Modify to your available GPUs
 
 # Maximum runs per GPU
 MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
@@ -17,34 +17,36 @@ declare -A TASK_STRINGS=(
     # ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
     # ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
     # ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
-    ["less_to_more"]="pendulum_swingup|finger_spin|walker_walk"
-    ["more_to_less"]="walker_walk|finger_spin|pendulum_swingup"
-    ["random"]="finger_spin|pendulum_swingup|walker_walk|"
+    # ["less_to_more"]="pendulum_swingup|finger_spin|walker_walk"
+    # ["more_to_less"]="walker_walk|finger_spin|pendulum_swingup"
+    # ["random"]="finger_spin|pendulum_swingup|walker_walk|"
+    ["less_to_more"]="finger_spin|hopper_hop|quadruped_run"
+    ["more_to_less"]="quadruped_run|hopper_hop|finger_spin"
 )
 # Prefix for log directories
-PREFIX="examine_dreamer_continual_simple_short"
+PREFIX="examine_dreamer_continual_hard"
 
 # Model configuration
-MODEL_SIZE="size50m"  # Options: size1m, size12m, size50m, etc.
+MODEL_SIZE="size200m"  # Options: size1m, size12m, size50m, etc.
 
 # Base log directory
 BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=256
-TASK_INTERVAL=200000  # Modify as needed
+TASK_INTERVAL=400000  # Modify as needed
 
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 # Each entry will be assigned to a GPU independently
 declare -a SETTINGS=(
-    "less_to_more|1000"
-    "less_to_more|2000"
-    "less_to_more|3000"
+    # "less_to_more|1000"
+    # "less_to_more|2000"
+    # "less_to_more|3000"
     
-    # "more_to_less|1000"
-    # "more_to_less|2000"
-    # "more_to_less|3000"
+    "more_to_less|1000"
+    "more_to_less|2000"
+    "more_to_less|3000"
     
     # "random|1000"
     # "random|2000"

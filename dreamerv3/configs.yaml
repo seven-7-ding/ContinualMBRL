@@ -82,8 +82,8 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.35
+    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    # memory_fraction: 0.35
     jit: True
     debug: False
     expect_devices: 0
