@@ -66,10 +66,11 @@ class RSSM(nj.Module):
       return carry, entry, feat
     else:
       unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
-      carry, (entries, feat) = nj.scan(
-          lambda carry, inputs: self._observe(
-              carry, *inputs, training),
-          carry, (tokens, action, reset), unroll=unroll, axis=1)
+      with nn.scan_context():
+        carry, (entries, feat) = nj.scan(
+            lambda carry, inputs: self._observe(
+                carry, *inputs, training),
+            carry, (tokens, action, reset), unroll=unroll, axis=1)
       return carry, entries, feat
 
   def _observe(self, carry, tokens, action, reset, training):
@@ -83,6 +84,7 @@ class RSSM(nj.Module):
     for i in range(self.obslayers):
       x = self.sub(f'obs{i}', nn.Linear, self.hidden, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'obs{i}norm', nn.Norm, self.norm)(x))
+      x = nn.LAYER_CALLBACK(x, f'{self.path}/obs{i}')
     logit = self._logit('obslogit', x)
     stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
     carry = dict(deter=deter, stoch=stoch)
@@ -104,14 +106,15 @@ class RSSM(nj.Module):
       return carry, (feat, action)
     else:
       unroll = length if self.unroll else 1
-      if callable(policy):
-        carry, (feat, action) = nj.scan(
-            lambda c, _: self.imagine(c, policy, 1, training, single=True),
-            nn.cast(carry), (), length, unroll=unroll, axis=1)
-      else:
-        carry, (feat, action) = nj.scan(
-            lambda c, a: self.imagine(c, a, 1, training, single=True),
-            nn.cast(carry), nn.cast(policy), length, unroll=unroll, axis=1)
+      with nn.scan_context():
+        if callable(policy):
+          carry, (feat, action) = nj.scan(
+              lambda c, _: self.imagine(c, policy, 1, training, single=True),
+              nn.cast(carry), (), length, unroll=unroll, axis=1)
+        else:
+          carry, (feat, action) = nj.scan(
+              lambda c, a: self.imagine(c, a, 1, training, single=True),
+              nn.cast(carry), nn.cast(policy), length, unroll=unroll, axis=1)
       # We can also return all carry entries but it might be expensive.
       # entries = dict(deter=feat['deter'], stoch=feat['stoch'])
       # return carry, entries, feat, action
@@ -140,15 +143,19 @@ class RSSM(nj.Module):
     group2flat = lambda x: einops.rearrange(x, '... g h -> ... (g h)', g=g)
     x0 = self.sub('dynin0', nn.Linear, self.hidden, **self.kw)(deter)
     x0 = nn.act(self.act)(self.sub('dynin0norm', nn.Norm, self.norm)(x0))
+    x0 = nn.LAYER_CALLBACK(x0, f'{self.path}/dynin0')
     x1 = self.sub('dynin1', nn.Linear, self.hidden, **self.kw)(stoch)
     x1 = nn.act(self.act)(self.sub('dynin1norm', nn.Norm, self.norm)(x1))
+    x1 = nn.LAYER_CALLBACK(x1, f'{self.path}/dynin1')
     x2 = self.sub('dynin2', nn.Linear, self.hidden, **self.kw)(action)
     x2 = nn.act(self.act)(self.sub('dynin2norm', nn.Norm, self.norm)(x2))
+    x2 = nn.LAYER_CALLBACK(x2, f'{self.path}/dynin2')
     x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(g, -2)
     x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
     for i in range(self.dynlayers):
       x = self.sub(f'dynhid{i}', nn.BlockLinear, self.deter, g, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'dynhid{i}norm', nn.Norm, self.norm)(x))
+      x = nn.LAYER_CALLBACK(x, f'{self.path}/dynhid{i}')
     x = self.sub('dyngru', nn.BlockLinear, 3 * self.deter, g, **self.kw)(x)
     gates = jnp.split(flat2group(x), 3, -1)
     reset, cand, update = [group2flat(x) for x in gates]
@@ -163,6 +170,7 @@ class RSSM(nj.Module):
     for i in range(self.imglayers):
       x = self.sub(f'prior{i}', nn.Linear, self.hidden, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'prior{i}norm', nn.Norm, self.norm)(x))
+      x = nn.LAYER_CALLBACK(x, f'{self.path}/prior{i}')
     return self._logit('priorlogit', x)
 
   def _logit(self, name, x):
@@ -221,6 +229,7 @@ class Encoder(nj.Module):
       for i in range(self.layers):
         x = self.sub(f'mlp{i}', nn.Linear, self.units, **self.kw)(x)
         x = nn.act(self.act)(self.sub(f'mlp{i}norm', nn.Norm, self.norm)(x))
+        x = nn.LAYER_CALLBACK(x, f'{self.path}/mlp{i}')
       outs.append(x)
 
     if self.imgkeys:
@@ -239,6 +248,7 @@ class Encoder(nj.Module):
           B, H, W, C = x.shape
           x = x.reshape((B, H // 2, 2, W // 2, 2, C)).max((2, 4))
         x = nn.act(self.act)(self.sub(f'cnn{i}norm', nn.Norm, self.norm)(x))
+        x = nn.LAYER_CALLBACK(x, f'{self.path}/cnn{i}')
       assert 3 <= x.shape[-3] <= 16, x.shape
       assert 3 <= x.shape[-2] <= 16, x.shape
       x = x.reshape((x.shape[0], -1))
@@ -323,11 +333,13 @@ class Decoder(nj.Module):
             h=minres[0], w=minres[1], g=g)
         x1 = self.sub('sp1', nn.Linear, 2 * self.units, **self.kw)(x1)
         x1 = nn.act(self.act)(self.sub('sp1norm', nn.Norm, self.norm)(x1))
+        x1 = nn.LAYER_CALLBACK(x1, f'{self.path}/sp1')
         x1 = self.sub('sp2', nn.Linear, shape, **self.kw)(x1)
         x = nn.act(self.act)(self.sub('spnorm', nn.Norm, self.norm)(x0 + x1))
       else:
         x = self.sub('space', nn.Linear, shape, **kw)(inp)
         x = nn.act(self.act)(self.sub('spacenorm', nn.Norm, self.norm)(x))
+        x = nn.LAYER_CALLBACK(x, f'{self.path}/space')
       for i, depth in reversed(list(enumerate(self.depths[:-1]))):
         if self.strided:
           kw = dict(**self.kw, transp=True)
@@ -336,6 +348,7 @@ class Decoder(nj.Module):
           x = x.repeat(2, -2).repeat(2, -3)
           x = self.sub(f'conv{i}', nn.Conv2D, depth, K, **self.kw)(x)
         x = nn.act(self.act)(self.sub(f'conv{i}norm', nn.Norm, self.norm)(x))
+        x = nn.LAYER_CALLBACK(x, f'{self.path}/conv{i}')
       if self.outer:
         kw = dict(**self.kw, outscale=self.outscale)
         x = self.sub('imgout', nn.Conv2D, self.imgdep, K, **kw)(x)

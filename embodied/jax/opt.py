@@ -28,7 +28,7 @@ class Optimizer(nj.Module):
       self.grad_scale = nj.Variable(jnp.array, 1e4, f32, name='grad_scale')
       self.good_steps = nj.Variable(jnp.array, 0, i32, name='good_steps')
 
-  def __call__(self, lossfn, *args, has_aux=False, **kwargs):
+  def __call__(self, lossfn, *args, has_aux=False, gradient_redo=None, **kwargs):
     metrics = {}
 
     def lossfn2(*args, **kwargs):
@@ -56,6 +56,11 @@ class Optimizer(nj.Module):
     if self.scaling:
       invscale = 1 / self.grad_scale.read()
       grads = jax.tree.map(lambda x: x * invscale, grads)
+
+    # Gradient-based ReDo: reset dormant neurons before the optimiser update.
+    if gradient_redo is not None:
+      redo_metrics, params, grads = gradient_redo.step(params, grads)
+      metrics.update(redo_metrics)
 
     state = self.sub('state', nj.Tree, self.opt.init, params)
     updates, new_state = self.opt.update(grads, state.read(), params)

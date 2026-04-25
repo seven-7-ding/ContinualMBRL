@@ -12,6 +12,18 @@ import numpy as np
 COMPUTE_DTYPE = jnp.bfloat16
 LAYER_CALLBACK = lambda tensor, name: tensor
 
+# Depth counter: LAYER_CALLBACK captures are suppressed inside nj.scan bodies.
+_SCAN_DEPTH = [0]
+
+
+class scan_context:
+    """Context manager: increments _SCAN_DEPTH for the duration of nj.scan."""
+    def __enter__(self):
+        _SCAN_DEPTH[0] += 1
+        return self
+    def __exit__(self, *_):
+        _SCAN_DEPTH[0] -= 1
+
 f32 = jnp.float32
 
 
@@ -583,6 +595,8 @@ class MLP(nj.Module):
       x = self.sub(f'linear{i}', Linear, self.units, **self.kw)(x)
       x = self.sub(f'norm{i}', Norm, self.norm)(x)
       x = act(self.act)(x)
+      # Post-activation callback: key matches the linear layer's parameter path.
+      x = LAYER_CALLBACK(x, f'{self.path}/linear{i}')
     x = x.reshape((*shape, x.shape[-1]))
     return x
 

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ============= Configuration =============
-cd /home/jiale/MBRL/ContinualMBRL
+cd /home/jiale/MBRL/ContinualMBRL-examine
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(0 1 2 3 4 5 0 1 2 3 4 5)  # Modify to your available GPUs
+CUDA_DEVICES=(0 1 2 3 4 5)  # Modify to your available GPUs
 
 # Maximum runs per GPU
 MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
@@ -22,7 +22,7 @@ declare -A TASK_STRINGS=(
     ["random"]="finger_spin|pendulum_swingup|walker_walk|"
 )
 # Prefix for log directories
-PREFIX="dreamer_continual_simple_short"
+PREFIX="examine_dreamer_continual_simple_short"
 
 # Model configuration
 MODEL_SIZE="size50m"  # Options: size1m, size12m, size50m, etc.
@@ -42,9 +42,9 @@ declare -a SETTINGS=(
     "less_to_more|2000"
     "less_to_more|3000"
     
-    "more_to_less|1000"
-    "more_to_less|2000"
-    "more_to_less|3000"
+    # "more_to_less|1000"
+    # "more_to_less|2000"
+    # "more_to_less|3000"
     
     # "random|1000"
     # "random|2000"

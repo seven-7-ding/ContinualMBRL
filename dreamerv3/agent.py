@@ -83,6 +83,27 @@ class Agent(embodied.jax.Agent):
     scales.update({k: rec for k in dec_space})
     self.scales = scales
 
+    # ReDo plasticity analysers (created only when enabled in config).
+    redo_cfg = getattr(config, 'redo', None)
+    if redo_cfg and redo_cfg.redo_enabled:
+      self.act_redo = embodied.jax.FGReDo(
+          tau=redo_cfg.tau, mode=redo_cfg.mode,
+          frequency=redo_cfg.frequency, log_item=redo_cfg.log_item,
+          reset_start=redo_cfg.reset_start, reset_end=redo_cfg.reset_end,
+          skip_last_layer=redo_cfg.skip_last_layer,
+          rank_threshold=redo_cfg.rank_threshold,
+          name='act_redo')
+    else:
+      self.act_redo = None
+    if redo_cfg and redo_cfg.grad_redo_enabled:
+      self.grad_redo = embodied.jax.FGGradientReDo(
+          tau=redo_cfg.tau, mode=redo_cfg.mode,
+          frequency=redo_cfg.frequency, log_item=redo_cfg.log_item,
+          reset_start=redo_cfg.reset_start, reset_end=redo_cfg.reset_end,
+          name='grad_redo')
+    else:
+      self.grad_redo = None
+
   @property
   def policy_keys(self):
     return '^(enc|dyn|dec|pol)/'
@@ -137,8 +158,43 @@ class Agent(embodied.jax.Agent):
 
   def train(self, carry, data):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+
     metrics, (carry, entries, outs, mets) = self.opt(
-        self.loss, carry, obs, prevact, training=True, has_aux=True)
+        self.loss, carry, obs, prevact, training=True, has_aux=True,
+        gradient_redo=self.grad_redo)
+
+    # Activation-based ReDo: forward-only pass AFTER opt() using the repfeat
+    # already computed by the training step.  Being outside nj.grad means
+    # tensors are plain JIT-tracers (no JVP/VJP) – safe to store in a Python
+    # dict and no backward-pass memory overhead.
+    if self.act_redo is not None:
+      _acts = {}
+      _old_cb = nn.LAYER_CALLBACK
+      nn.LAYER_CALLBACK = lambda t, name: (
+        _acts.__setitem__(name, t) or _old_cb(t, name)
+        if nn._SCAN_DEPTH[0] == 0 else _old_cb(t, name))
+      # nn.LAYER_CALLBACK = lambda t, name: _acts.__setitem__(name, t) or _old_cb(t, name)
+      _repfeat = sg(outs['repfeat'])
+      # enc: no internal scan → mlp{i}/cnn{i} activations captured.
+      # _ = self.enc({}, obs, obs['is_first'], training=False)
+      # dyn: _core/_observe run inside nj.scan; their activations are
+      # suppressed by the _SCAN_DEPTH guard and cannot be captured via
+      # side-effects.  _prior (prior projection layers) is scan-free and
+      # can be called directly on the already-computed deter sequence.
+      # _ = self.dyn._prior(nn.cast(_repfeat['deter']))
+      # dec: no internal scan → sp1/conv{i} activations captured.
+      # _ = self.dec({}, _repfeat, obs['is_first'], training=False)
+      # rew/con: use repfeat (same distribution as training).
+      # pol/val: use imgfeat (same distribution as imag_loss training).
+      _repf = self.feat2tensor(_repfeat)
+      _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
+      _ = self.rew(_repf, 2)
+      _ = self.con(_repf, 2)
+      _ = self.pol(_imgf, 2)
+      _ = self.val(_imgf, 2)
+      nn.LAYER_CALLBACK = _old_cb
+      mets.update(self.act_redo.step(_acts))
+
     metrics.update(mets)
     self.slowval.update()
     outs = {}
@@ -243,6 +299,8 @@ class Agent(embodied.jax.Agent):
     carry = (enc_carry, dyn_carry, dec_carry)
     entries = (enc_entries, dyn_entries, dec_entries)
     outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
+    if training:
+      outs['imgfeat'] = imgfeat
     return loss, (carry, entries, outs, metrics)
 
   def report(self, carry, data):

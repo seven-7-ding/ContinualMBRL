@@ -2,6 +2,7 @@ import collections
 from functools import partial as bind
 
 import elements
+from jax import grad
 import embodied
 from embodied.jax.internal import stats
 import numpy as np
@@ -127,16 +128,26 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       train_metrics_new = {}
       loss_metrics = {}
       opt_metrics = {}
+      act_redo_metrics = {}
+      grad_redo_metrics = {}
       for k, v in train_metrics.items():
         if "train/loss/" in k and "opt" not in k:
           loss_metrics[k.replace('train/loss/', '')] = v
         elif "train/opt/" in k:
           opt_metrics[k.replace('train/opt/', '')] = v
+        elif "train/act_redo/" in k:
+          if not np.isnan(float(v)):
+            act_redo_metrics[k.replace('train/act_redo/', '')] = v
+        elif "train/opt/grad_redo/" in k:
+          if not np.isnan(float(v)):
+            grad_redo_metrics[k.replace('train/opt/grad_redo/', '')] = v
         else:
           train_metrics_new[k.replace('train/', '')] = v
       logger.add(train_metrics_new, prefix='train')
       logger.add(loss_metrics, prefix='loss')
       logger.add(opt_metrics, prefix='opt')
+      logger.add(act_redo_metrics, prefix='act_redo')
+      logger.add(grad_redo_metrics, prefix='grad_redo')
       logger.add(epstats.result(), prefix='epstats')
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')

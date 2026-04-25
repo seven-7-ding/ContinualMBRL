@@ -10,6 +10,9 @@ from .utils import SlowModel
 
 from .opt import Optimizer
 
+from .FineGrainedReDo import FGReDo
+from .FineGrainedReDo import FGGradientReDo
+
 from . import nets
 from . import outs
 from . import opt

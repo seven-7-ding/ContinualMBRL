@@ -148,8 +148,9 @@ def create_layer_callback(mesh, partition_rules):
           TRACER_SHARDINGS[id(y)] = sharding
           return y
         return jax.tree.map(apply, y)
-    else:
-      raise Exception(f'No matching rule found for activation key: {name}')
+    # else:
+    #   raise Exception(f'No matching rule found for activation key: {name}')
+    return y
   return layer_callback
 
 

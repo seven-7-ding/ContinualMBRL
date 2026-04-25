@@ -82,13 +82,14 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
     memory_fraction: 0.35
     jit: True
     debug: False
     expect_devices: 0
     enable_policy: True
     coordinator_address: ''
+    ckpt_chunksize: 33554432  # 32MB per checkpoint group; avoids ptxas SIGSEGV on large models
 
   agent:
     loss_scales: {rec: 1.0, reward: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
@@ -124,6 +125,35 @@ defaults:
     repval_grad: True
     report: True
     report_gradnorms: False
+    redo:
+      # redo_enabled: run activation-based FGReDo (collects layer activations
+      #   during training and resets dormant neurons every `frequency` steps).
+      # grad_redo_enabled: run gradient-based FGGradientReDo (analyses
+      #   gradient magnitudes before the optimiser update).
+      redo_enabled: True
+      grad_redo_enabled: True
+      # Dormancy threshold / fraction.  Used by whichever analysers are on.
+      tau: 0.05
+      # 'threshold': dormant if normalised score <= tau
+      # 'percentage': dormant if in the lowest tau-fraction of neurons
+      mode: threshold
+      # Steps between successive analysis+reset passes.
+      frequency: 1000
+      # What to do each pass (substring-matched, can be combined with '+'):
+      #   'disabled' – skip all work (fastest; step counter still ticks)
+      #   'log'      – compute dormancy metrics only, no weight reset
+      #   'reset'    – compute metrics AND reinitialise dormant weights
+      #   'erank'    – also compute effective rank (SVD-based, gated on frequency)
+      #   'srank'    – also compute stable rank   (SVD-based, gated on frequency)
+      # Examples: 'log', 'reset', 'log+erank', 'reset+erank+srank'
+      log_item: log+erank+srank
+      # Skip the last executed linear/conv layer (matches PyTorch version behaviour).
+      skip_last_layer: True
+      # Cumulative singular-value fraction used by srank.
+      rank_threshold: 0.99
+      # Optional step-range window for resets (0 = no limit).
+      reset_start: 0
+      reset_end: 0
 
 size1m: &size1m
   .*\.rssm: {deter: 512, hidden: 64, classes: 4}

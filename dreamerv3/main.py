@@ -32,16 +32,6 @@ def main(argv=None):
   config = elements.Flags(config).parse(other)
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
-  # if '|' in config.task:
-  #   # Remove brackets and parse comma-separated items
-  #   # config.task = walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin
-  #   task_str = config.task.strip('|')
-  #   tasks = [task.strip() for task in task_str.split('|')]
-  #   full_tasks = []
-  #   for task in tasks:
-  #     full_tasks += [task] * config.run.envs
-  #   full_tasks = full_tasks * config.run.task_repeat
-  #   config = config.update(dict(task="|".join(full_tasks)))
   print('tasks:', config.task)
 
   if 'JOB_COMPLETION_INDEX' in os.environ:
