@@ -44,9 +44,9 @@ declare -a SETTINGS=(
     # "less_to_more|2000|default"
     # "less_to_more|3000|default"
     
-    "more_to_less|1000|no_norm"
-    "more_to_less|2000|no_norm"
-    "more_to_less|3000|no_norm"
+    "less_to_more|1000|no_norm_relu"
+    "less_to_more|2000|no_norm_relu"
+    "less_to_more|3000|no_norm_relu"
 
     # "random|1000|default"
     # "random|2000|default"

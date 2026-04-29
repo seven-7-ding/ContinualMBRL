@@ -81,8 +81,8 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    # memory_fraction: 0.35
+    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    memory_fraction: 0.35
     jit: True
     debug: False
     expect_devices: 0
@@ -96,17 +96,17 @@ defaults:
     ac_grads: False
     dyn:
       typ: rssm
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: relu, norm: none, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
     enc:
       typ: simple
-      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
+      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: relu, norm: none, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
     dec:
       typ: simple
-      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}
-    rewhead: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
-    conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
-    policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
-    value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
+      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: relu, norm: none, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}
+    rewhead: {layers: 1, units: 1024, act: relu, norm: none, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
+    conhead: {layers: 1, units: 1024, act: relu, norm: none, output: binary, outscale: 1.0, winit: trunc_normal_in}
+    policy: {layers: 3, units: 1024, act: relu, norm: none, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
+    value: {layers: 3, units: 1024, act: relu, norm: none, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
     imag_last: 0
@@ -137,7 +137,7 @@ defaults:
       # 'percentage': dormant if in the lowest tau-fraction of neurons
       mode: threshold
       # Steps between successive analysis+reset passes.
-      frequency: 1000
+      frequency: 10000
       # What to do each pass (substring-matched, can be combined with '+'):
       #   'disabled' – skip all work (fastest; step counter still ticks)
       #   'log'      – compute dormancy metrics only, no weight reset

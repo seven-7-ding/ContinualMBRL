@@ -42,6 +42,8 @@ def act(name):
     return lambda x: x * jnp.tanh(jax.nn.softplus(x))
   elif name == 'relu2':
     return lambda x: jnp.square(jax.nn.relu(x))
+  elif name == 'relu':
+    return jax.nn.relu
   elif name == 'swiglu':
     def fn(x):
       x, y = jnp.split(x, 2, -1)
