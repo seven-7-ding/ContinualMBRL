@@ -17,40 +17,40 @@ declare -A TASK_STRINGS=(
     # ["less_to_more"]="finger_spin|reacher_hard|hopper_hop|fish_swim|walker_walk"
     # ["more_to_less"]="walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin"
     # ["random"]="finger_spin|hopper_hop|reacher_hard|walker_walk|fish_swim"
-    # ["less_to_more"]="pendulum_swingup|finger_spin|walker_walk"
-    # ["more_to_less"]="walker_walk|finger_spin|pendulum_swingup"
+    ["less_to_more"]="pendulum_swingup|finger_spin|walker_walk"
+    ["more_to_less"]="walker_walk|finger_spin|pendulum_swingup"
     # ["random"]="finger_spin|pendulum_swingup|walker_walk|"
-    ["less_to_more"]="finger_spin|hopper_hop|quadruped_run"
-    ["more_to_less"]="quadruped_run|hopper_hop|finger_spin"
+    # ["less_to_more"]="finger_spin|hopper_hop|quadruped_run"
+    # ["more_to_less"]="quadruped_run|hopper_hop|finger_spin"
 )
 # Prefix for log directories
-PREFIX="examine_dreamer_continual_hard"
+PREFIX="examine_dreamer_continual_simple_short"
 
 # Model configuration
-MODEL_SIZE="size200m"  # Options: size1m, size12m, size50m, etc.
+MODEL_SIZE="size50m"  # Options: size1m, size12m, size50m, etc.
 
 # Base log directory
 BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=256
-TASK_INTERVAL=400000  # Modify as needed
+TASK_INTERVAL=200000  # Modify as needed
 
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 # Each entry will be assigned to a GPU independently
 declare -a SETTINGS=(
-    # "less_to_more|1000"
-    # "less_to_more|2000"
-    # "less_to_more|3000"
+    # "less_to_more|1000|default"
+    # "less_to_more|2000|default"
+    # "less_to_more|3000|default"
     
-    "more_to_less|1000"
-    "more_to_less|2000"
-    "more_to_less|3000"
-    
-    # "random|1000"
-    # "random|2000"
-    # "random|3000"
+    "more_to_less|1000|no_norm"
+    "more_to_less|2000|no_norm"
+    "more_to_less|3000|no_norm"
+
+    # "random|1000|default"
+    # "random|2000|default"
+    # "random|3000|default"
 )
 
 # ============= Initialize =============
@@ -78,7 +78,7 @@ fi
 
 # Iterate over all settings
 for setting_spec in "${SETTINGS[@]}"; do
-    IFS='|' read -r task_type seed <<< "$setting_spec"
+    IFS='|' read -r task_type seed setting_name <<< "$setting_spec"
     
     # Check if we've reached capacity
     if [ $run_counter -ge $TOTAL_CAPACITY ]; then
@@ -96,7 +96,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     device_num=${CUDA_DEVICES[$gpu_idx]}
     
     # Create log directory
-    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${task_type}/seed_$seed"
+    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${task_type}_${setting_name}/seed_$seed"
     mkdir -p "$logdir"
     
     # Construct command

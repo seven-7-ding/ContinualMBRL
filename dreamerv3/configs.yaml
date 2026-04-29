@@ -35,7 +35,7 @@ defaults:
     dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
-    continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
+    continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, task_action_space: [12]}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
 
   replay:
@@ -72,7 +72,6 @@ defaults:
     debug: True
 
     # TODO: additional configs for continual dmc_vision.
-    task_action_space: [6]
     task_repeat: 10
     task_interval: 1e5
 
@@ -82,7 +81,7 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
     # memory_fraction: 0.35
     jit: True
     debug: False
@@ -227,6 +226,7 @@ dmc_vision:
 continual_dmc_vision:
   task: walker_walk|fish_swim|hopper_hop|reacher_hard|finger_spin
   env.continual_dmc.proprio: False
+  env.continual_dmc.task_action_space: [12]
   run: {steps: 5e8, task_repeat: 10, task_interval: 1e5, train_ratio: 256}
 
 bsuite:
