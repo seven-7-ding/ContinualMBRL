@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-examine
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(3 4 5)  # Modify to your available GPUs
+CUDA_DEVICES=(0 1 2)  # Modify to your available GPUs
 
 # Maximum runs per GPU
 MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
