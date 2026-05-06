@@ -22,7 +22,7 @@ MODEL_SIZE="size1m"  # Options: size1m, size12m, size50m, etc.
 BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
-TRAIN_RATIO=256
+TRAIN_RATIO=1024
 TASK_INTERVAL=200000  # Match VDRL task_steps=200000
 
 # ============= Settings Definition =============
