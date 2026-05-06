@@ -23,6 +23,10 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   policy_fps = elements.FPS()
   train_fps = elements.FPS()
 
+  # Parse task list for per-task performance logging.
+  _raw_task = getattr(args, 'task', '')
+  task_list = [t.strip() for t in _raw_task.split('|')] if '|' in _raw_task else [_raw_task or 'task']
+
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
   print(f'Train ratio: {should_train._ratio}, Batch steps: {batch_steps}, Train calls per step: {args.train_ratio / batch_steps}')
@@ -51,10 +55,12 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         episode.add(key + '/sum', value, agg='sum')
     if tran['is_last']:
       result = episode.result()
+      # Per-task performance logging (mirrors SAC's performance/{task}/score).
+      current_task = task_list[switch_count % len(task_list)]
       logger.add({
           'score': result.pop('score'),
           'length': result.pop('length'),
-      }, prefix='episode')
+      }, prefix=f'performance/{current_task}')
       rew = result.pop('rewards')
       if len(rew) > 1:
         result['delta_reward>0.01_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
@@ -112,7 +118,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       )
       driver.reset(agent.init_policy)
       replay.clear()
-      print(f"Switched to new environment at step {step.value}.")
+      if getattr(args, 'reset_on_switch', False):
+        agent.reset_params()
+        print(f"Agent fully reset at step {step.value} (reset_on_switch=True).")
+      else:
+        print(f"Switched to new environment at step {step.value}.")
 
     driver(policy, steps=10)
 

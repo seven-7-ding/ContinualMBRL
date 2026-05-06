@@ -396,6 +396,40 @@ class Agent(embodied.Agent):
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
 
+  def reset_params(self):
+    """Reinitialise all network parameters from scratch.
+
+    Called on task switch when ``args.reset_on_switch=True`` (analogous to
+    ``vd_mode=reset_all`` in the SAC side).  Uses the same locking and
+    sharding logic as ``load()`` to ensure thread safety.
+    """
+    # Produce a fresh set of parameters with identical sharding.
+    with self.train_mesh:
+      new_params, _ = self._init_params()
+
+    with contextlib.ExitStack() as stack:
+      stack.enter_context(self.train_lock)
+      stack.enter_context(self.policy_lock)
+
+      # Reset training counters so scheduler / ReDo start fresh.
+      with self.n_updates.lock:
+        self.n_updates.value = 0
+      with self.n_batches.lock:
+        self.n_batches.value = 0
+      with self.n_actions.lock:
+        self.n_actions.value = 0
+
+      # Swap parameters (delete old to free device memory first).
+      jax.tree.map(lambda x: x.delete(), self.params)
+      self.params = new_params
+
+      if self.jaxcfg.enable_policy:
+        jax.tree.map(lambda x: x.delete(), self.policy_params)
+        policy_params = {
+            k: self.params[k].copy() for k in self.policy_keys}
+        self.policy_params = internal.move(
+            policy_params, self.policy_params_sharding)
+
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)
     outs = jax.tree.map(

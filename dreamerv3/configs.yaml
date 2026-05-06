@@ -19,6 +19,7 @@ defaults:
   ipv6: False
   errfile: False
   egl_device: "0"
+  continual_env: vision  # "vision" or "priori"; selects env class for continual tasks
 
   logger:
     outputs: [jsonl, scope, wandb]
@@ -36,6 +37,7 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, task_action_space: [12]}
+    continual_dmc_priori: {repeat: 1, obs_dim: 32, task_action_space: [6], camera: -1, size: [64, 64]}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
 
   replay:
@@ -74,6 +76,8 @@ defaults:
     # TODO: additional configs for continual dmc_vision.
     task_repeat: 10
     task_interval: 1e5
+    # Reset all agent parameters on each task switch (analogous to SAC reset_all).
+    reset_on_switch: false
 
   jax:
     platform: cuda
@@ -81,7 +85,7 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
     memory_fraction: 0.35
     jit: True
     debug: False
@@ -96,17 +100,17 @@ defaults:
     ac_grads: False
     dyn:
       typ: rssm
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: none, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
     enc:
       typ: simple
-      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: none, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
+      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
     dec:
       typ: simple
-      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: none, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}
-    rewhead: {layers: 1, units: 1024, act: silu, norm: none, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
-    conhead: {layers: 1, units: 1024, act: silu, norm: none, output: binary, outscale: 1.0, winit: trunc_normal_in}
-    policy: {layers: 3, units: 1024, act: silu, norm: none, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
-    value: {layers: 3, units: 1024, act: silu, norm: none, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
+      simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: trunc_normal_in, outer: False, kernel: 5, bspace: 8, strided: False}
+    rewhead: {layers: 1, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
+    conhead: {layers: 1, units: 1024, act: silu, norm: rms, output: binary, outscale: 1.0, winit: trunc_normal_in}
+    policy: {layers: 3, units: 1024, act: silu, norm: rms, minstd: 0.1, maxstd: 1.0, outscale: 0.01, unimix: 0.01, winit: trunc_normal_in}
+    value: {layers: 3, units: 1024, act: silu, norm: rms, output: symexp_twohot, outscale: 0.0, winit: trunc_normal_in, bins: 255}
     policy_dist_disc: categorical
     policy_dist_cont: bounded_normal
     imag_last: 0
@@ -228,6 +232,13 @@ continual_dmc_vision:
   env.continual_dmc.proprio: False
   env.continual_dmc.task_action_space: [12]
   run: {steps: 5e8, task_repeat: 10, task_interval: 1e5, train_ratio: 256}
+
+continual_dmc_priori:
+  continual_env: priori
+  task: finger_spin|walker_walk|cheetah_run|reacher_easy
+  env.continual_dmc_priori.obs_dim: 32
+  env.continual_dmc_priori.task_action_space: [6]
+  run: {steps: 5e8, task_repeat: 10, task_interval: 2e5, train_ratio: 256}
 
 bsuite:
   task: bsuite_mnist/0

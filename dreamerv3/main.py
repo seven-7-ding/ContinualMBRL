@@ -69,6 +69,7 @@ def main(argv=None):
       consec_train=config.consec_train,
       consec_report=config.consec_report,
       replay_context=config.replay_context,
+      task=config.task,
   )
 
   if config.script == 'train':
@@ -170,6 +171,9 @@ def make_logger(config):
   # Handle both list and string task types
   if "|" in config.task:
     task_prefix = 'continual_dmc'  # Default prefix for continual learning
+    # Use priori env config if in priori mode
+    if getattr(config, 'continual_env', 'vision') == 'priori':
+      task_prefix = 'continual_dmc_priori'
   else:
     task_prefix = config.task.split('_')[0]
   multiplier = config.env.get(task_prefix, {}).get('repeat', 1)
@@ -240,11 +244,19 @@ def make_replay(config, folder, mode='train'):
 
 def make_env(config, index, switch_count=0, **overrides):
   if "|" in config.task:
-    from embodied.envs.general_dmc import GeneralDMC
-    ctor = GeneralDMC
-    suite = "continual_dmc"
     tasks = config.task.split('|')
     task = tasks[switch_count % len(tasks)].strip()
+
+    continual_env = getattr(config, 'continual_env', 'vision')
+    if continual_env == 'priori':
+      from embodied.envs.general_dmc_priori import GeneralDMCPriori
+      ctor = GeneralDMCPriori
+      suite = "continual_dmc_priori"
+    else:
+      from embodied.envs.general_dmc import GeneralDMC
+      ctor = GeneralDMC
+      suite = "continual_dmc"
+
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop('use_seed', False):
