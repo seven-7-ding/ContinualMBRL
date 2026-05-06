@@ -403,6 +403,17 @@ class Agent(embodied.Agent):
     ``vd_mode=reset_all`` in the SAC side).  Uses the same locking and
     sharding logic as ``load()`` to ensure thread safety.
     """
+    # nj.Tree caches its treedef after the first call to read()/write().
+    # On a second call to _init_params(), the context starts without
+    # 'opt/state', so self.values returns {} and unflatten() asserts
+    # set({}) == set(opt_keys).  Reset treedef=None so Tree re-initialises
+    # from scratch during the upcoming _init_params() call.
+    opt = getattr(self.model, 'opt', None)
+    if opt is not None:
+      for sub in getattr(opt, '_submodules', {}).values():
+        if hasattr(sub, 'treedef'):
+          sub.treedef = None
+
     # Produce a fresh set of parameters with identical sharding.
     with self.train_mesh:
       new_params, _ = self._init_params()
