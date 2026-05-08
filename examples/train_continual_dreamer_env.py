@@ -20,6 +20,10 @@ Example
 """
 
 import os
+import sys
+# Ensure MF-dreamer's local jaxrl2 takes priority over any editable installs.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 
@@ -53,7 +57,7 @@ flags.DEFINE_integer("start_training", 10_000,
 flags.DEFINE_integer("batch_size",  1024, "Mini-batch size for replay sampling.")
 flags.DEFINE_integer("utd",           1,  "Updates per environment step.")
 flags.DEFINE_integer("num_envs",     16,  "Parallel env workers for data collection.")
-flags.DEFINE_integer("num_imag_envs", 64, "Number of envs for imagination rollouts.")
+flags.DEFINE_integer("num_imag_envs", 1024, "Number of envs for imagination rollouts.")
 flags.DEFINE_integer("eval_episodes", 5,  "Episodes per eval.")
 flags.DEFINE_integer("eval_interval", 20_000, "Steps between evals.")
 flags.DEFINE_integer("log_interval",  10_000, "Steps between log flushes.")

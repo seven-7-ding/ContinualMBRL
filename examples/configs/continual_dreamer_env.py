@@ -29,7 +29,7 @@ def get_config():
     config.actent         = 3e-4
     config.slowreg        = 1.0
     config.slow_fraction  = 0.02
-    config.imag_length    = 5
+    config.imag_length    = 16
 
     config.jax_mem_fraction = 0.4
 

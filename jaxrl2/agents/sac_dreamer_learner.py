@@ -20,7 +20,9 @@ Training algorithm (mirrors dreamerv3/agent.py imag_loss):
 """
 
 import copy
+import os
 import re as _re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Sequence, Tuple
 
 import gym
@@ -373,7 +375,11 @@ def _update_jit(
 
     def actor_loss_fn(actor_params):
         dist = actor.apply_fn({'params': actor_params}, obs_traj[:, :-1])
-        actions_taken = jax.lax.stop_gradient(act_traj[:, :-1])
+        # Clip stored tanh-squashed actions to (-1+ε, 1-ε) to prevent
+        # arctanh(±1) = ±∞, which causes log_prob = ∞ - ∞ = NaN and
+        # subsequently NaN gradients / NaN policy weights.
+        actions_taken = jax.lax.stop_gradient(
+            jnp.clip(act_traj[:, :-1], -1.0 + 1e-6, 1.0 - 1e-6))
         log_probs = dist.log_prob(actions_taken)
         ents = dist.distribution.entropy()
         policy_loss = (jax.lax.stop_gradient(weight[:, :-1]) *
@@ -435,6 +441,28 @@ def _eval_actions_jit(actor: TrainState, observations):
 
 
 # ---------------------------------------------------------------------------
+# Picklable helpers for parallel imagination rollouts
+# (module-level so ThreadPoolExecutor workers can call them without closure)
+# ---------------------------------------------------------------------------
+
+def _init_imag_env(args):
+    """Restore physics state of one imagination env (called in thread pool)."""
+    env, state = args
+    env.set_physics_state(state)
+
+
+def _step_imag_env(args):
+    """Step one imagination env (called in thread pool).
+    Returns (obs, reward, done, info) or None on physics error.
+    """
+    env, action = args
+    try:
+        return env.step(action)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # DreamerEnvLearner
 # ---------------------------------------------------------------------------
 
@@ -469,6 +497,7 @@ class DreamerEnvLearner(Agent):
         slow_fraction: float = 0.02,
         imag_length: int = 5,
         vd_mode: str = 'disabled',
+        imag_workers: int = 0,
         opt: Optional[Dict] = None,
         redo: Optional[Dict] = None,
     ):
@@ -572,6 +601,12 @@ class DreamerEnvLearner(Agent):
         self._value_grad_redo = SACGradientReDo(name='value', **grad_kw) \
             if redo.get('grad_redo_enabled', False) else None
 
+        # Persistent thread pool for parallel imagination rollouts.
+        # MuJoCo releases the GIL during physics simulation, so threads give
+        # genuine parallelism across independent env instances.
+        _n = imag_workers if imag_workers > 0 else min(os.cpu_count() or 32, 64)
+        self._imag_pool = ThreadPoolExecutor(max_workers=_n)
+
     # ------------------------------------------------------------------
     # Reset
     # ------------------------------------------------------------------
@@ -630,8 +665,10 @@ class DreamerEnvLearner(Agent):
         B = min(len(imag_envs), batch_obs.shape[0])
         H = self.imag_length
 
-        for i in range(B):
-            imag_envs[i].set_physics_state(batch_physics[i])
+        # Restore physics states in parallel (MuJoCo releases GIL).
+        list(self._imag_pool.map(
+            _init_imag_env,
+            [(imag_envs[i], batch_physics[i]) for i in range(B)]))
 
         obs_traj  = [batch_obs[:B].astype(np.float32)]
         act_traj  = []
@@ -649,15 +686,28 @@ class DreamerEnvLearner(Agent):
             last = last_traj[-1].copy()
             term = np.zeros(B, dtype=bool)
 
-            for i in range(B):
-                if last_traj[-1][i]:
+            # Step active envs in parallel.
+            active = [i for i in range(B) if not last_traj[-1][i]]
+            step_results = list(self._imag_pool.map(
+                _step_imag_env,
+                [(imag_envs[i], actions[i]) for i in active]))
+
+            for idx, i in enumerate(active):
+                result = step_results[idx]
+                if result is None:
+                    # Physics error: treat as episode end.
+                    last[i] = True
                     continue
-                n_obs, r, done, info = imag_envs[i].step(actions[i])
-                truncated = info.get('TimeLimit.truncated', False)
-                next_obs[i] = np.asarray(n_obs, dtype=np.float32)
+                n_obs, r, done, info = result
+                n_obs_arr = np.asarray(n_obs, dtype=np.float32)
+                if not np.all(np.isfinite(n_obs_arr)):
+                    # NaN from physics instability: end trajectory.
+                    last[i] = True
+                    continue
+                next_obs[i] = n_obs_arr
                 rew[i]  = float(r)
                 last[i] = bool(done)
-                term[i] = bool(done and not truncated)
+                term[i] = bool(done and not info.get('TimeLimit.truncated', False))
 
             act_traj.append(actions)
             rew_traj.append(rew)

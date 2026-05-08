@@ -2,6 +2,7 @@
 
 # ============= Configuration =============
 cd /home/jiale/MBRL/MF-dreamer
+export PYTHONPATH="/home/jiale/MBRL/MF-dreamer:${PYTHONPATH}"
 
 # Available CUDA devices (modify as needed)
 CUDA_DEVICES=(6 7 6 7 6 7)  # Modify to your available GPUs
@@ -10,7 +11,7 @@ CUDA_DEVICES=(6 7 6 7 6 7)  # Modify to your available GPUs
 MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
 
 # Training configuration
-PREFIX="continual_dreamer_env"
+PREFIX="continual_sac_dreamer_together"
 
 # Continual task settings
 TASKS_STR="finger_spin,walker_walk,cheetah_run,reacher_easy"
@@ -44,13 +45,13 @@ UTD=(1)
 # Format: "vd_mode|seed"
 # vd_mode: 'disabled' for standard run; 'reset_all' to reset agent on task switch
 declare -a SETTINGS=(
-    "disabled|1000"
-    "disabled|2000"
-    "disabled|3000"
+    "dreamer_like_disabled|1000"
+    "dreamer_like_disabled|2000"
+    "dreamer_like_disabled|3000"
 
-    "reset_all|1000"
-    "reset_all|2000"
-    "reset_all|3000"
+    "dreamer_like_disabled_reset_all|1000"
+    "dreamer_like_disabled_reset_all|2000"
+    "dreamer_like_disabled_reset_all|3000"
 )
 
 # ============= Initialize =============

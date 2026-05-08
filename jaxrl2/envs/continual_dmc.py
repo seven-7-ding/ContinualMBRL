@@ -253,7 +253,19 @@ class ContinualDMCEnv(gym.Env):
             return self._pad_obs(obs), float(reward), bool(done), info
         else:
             real_action = np.asarray(action[:self._real_act_dim], dtype=np.float64)
-            time_step = self._env.step(real_action)
+            # Sanitize: replace NaN/Inf (from policy instability) with 0,
+            # then clip to the actuator ctrlrange to prevent mjWARN_BADCTRL.
+            if not np.all(np.isfinite(real_action)):
+                real_action = np.where(np.isfinite(real_action), real_action, 0.0)
+            real_action = np.clip(real_action, -1.0, 1.0)
+            try:
+                time_step = self._env.step(real_action)
+            except Exception:
+                # Physics became invalid despite sanitization (e.g. corrupted
+                # state from a previous bad restore).  Reset and return a
+                # terminal step so the training loop can continue.
+                obs = self._flatten_dmc_obs(self._env.reset())
+                return obs, 0.0, True, {}
             obs    = self._flatten_dmc_obs(time_step)
             reward = float(time_step.reward or 0.0)
             done   = time_step.last()
@@ -302,10 +314,20 @@ class ContinualDMCEnv(gym.Env):
         early-termination during imagination rollouts.
         """
         state = np.asarray(state, dtype=np.float64)
+        # Guard: if the stored state is invalid (NaN/Inf from data collection
+        # instability), just keep the fresh reset state.
+        if not np.all(np.isfinite(state)):
+            self._env.reset()
+            self.task_step = 0
+            return
         if self._task_type == 'dmc':
             self._env.reset()
             expected_dim = len(self._env.physics.get_state())
             self._env.physics.set_state(state[:expected_dim])
+            # Propagate qpos/qvel to all derived quantities (xpos, xmat, etc.).
+            # Without this call, mj_fwdActuation may operate on stale data and
+            # produce NaN ctrl, triggering mjWARN_BADCTRL on the first step.
+            self._env.physics.forward()
         else:
             self._env.reset()
             nq = self._env.sim.model.nq
