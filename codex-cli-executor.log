@@ -1,0 +1,10 @@
+2026-05-12 22:53:19 +0800
+Task: Add Dreamer reset_only_wm/reset_only_agent modes, update continual_mujoco_dreamer_priori.sh, validate on CUDA 6/7, deploy six experiments alternating 6/7.
+Actions: Inspected reset implementation, continual training loop, config, existing script modifications, and parameter key summaries.
+2026-05-12 22:59:38 +0800
+Validation: py_compile passed; short CUDA debug passed for reset_only_wm on GPU 6 and reset_only_agent on GPU 7.
+2026-05-12 23:04:51 +0800
+Fix: made continual report stream lazy and skipped report when replay sequence length is shorter than report_length; updated launch script to skip only non-empty train.log and use PYTHONUNBUFFERED.
+2026-05-12 23:20:42 +0800
+Deployment: Initial background launches were cleaned up by execution environment; used persistent shell sessions with wait/foreground process to keep jobs alive. One reset_agent seed 1000 hit ptxas error 139 during concurrent compile, then retried alone on GPU 7 and reached Start training loop.
+Final verification: six formal Dreamer processes running, three on CUDA 6 and three on CUDA 7; each target train.log contains Start training loop.

@@ -396,13 +396,27 @@ class Agent(embodied.Agent):
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
 
-  def reset_params(self):
-    """Reinitialise all network parameters from scratch.
+  def reset_params(self, mode='all'):
+    """Reinitialise selected network parameters from scratch.
 
-    Called on task switch when ``args.reset_on_switch=True`` (analogous to
-    ``vd_mode=reset_all`` in the SAC side).  Uses the same locking and
-    sharding logic as ``load()`` to ensure thread safety.
+    Called on task switch for continual runs. ``mode='all'`` preserves the
+    legacy full reset behavior. ``mode='wm'`` resets the Dreamer world model
+    (encoder, dynamics, decoder, reward, continuation) and ``mode='agent'``
+    resets the behavior/value side while keeping the world model intact.
     """
+    aliases = {
+        True: 'all',
+        'true': 'all',
+        'reset_all': 'all',
+        'reset_only_wm': 'wm',
+        'world_model': 'wm',
+        'worldmodel': 'wm',
+        'reset_only_agent': 'agent',
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ('all', 'wm', 'agent'):
+      raise ValueError(f'Unknown reset mode: {mode}')
+
     # nj.Tree caches its treedef after the first call to read()/write().
     # On a second call to _init_params(), the context starts without
     # 'opt/state', so self.values returns {} and unflatten() asserts
@@ -422,17 +436,30 @@ class Agent(embodied.Agent):
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
 
-      # Reset training counters so scheduler / ReDo start fresh.
-      with self.n_updates.lock:
-        self.n_updates.value = 0
-      with self.n_batches.lock:
-        self.n_batches.value = 0
-      with self.n_actions.lock:
-        self.n_actions.value = 0
+      if mode == 'all':
+        # Reset training counters so scheduler / ReDo start fresh.
+        with self.n_updates.lock:
+          self.n_updates.value = 0
+        with self.n_batches.lock:
+          self.n_batches.value = 0
+        with self.n_actions.lock:
+          self.n_actions.value = 0
 
-      # Swap parameters (delete old to free device memory first).
-      jax.tree.map(lambda x: x.delete(), self.params)
-      self.params = new_params
+      if mode == 'all':
+        # Swap parameters (delete old to free device memory first).
+        jax.tree.map(lambda x: x.delete(), self.params)
+        self.params = new_params
+      else:
+        reset_keys = [
+            k for k in self.params
+            if self._reset_key_matches(k, mode) and k in new_params]
+        if not reset_keys:
+          raise ValueError(f'No parameters matched reset mode: {mode}')
+        old_params = {k: self.params[k] for k in reset_keys}
+        jax.tree.map(lambda x: x.delete(), old_params)
+        self.params.update({k: new_params[k] for k in reset_keys})
+        unused = {k: v for k, v in new_params.items() if k not in reset_keys}
+        jax.tree.map(lambda x: x.delete(), unused)
 
       if self.jaxcfg.enable_policy:
         jax.tree.map(lambda x: x.delete(), self.policy_params)
@@ -440,6 +467,18 @@ class Agent(embodied.Agent):
             k: self.params[k].copy() for k in self.policy_keys}
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
+        if self.pending_sync:
+          jax.tree.map(lambda x: x.delete(), self.pending_sync)
+          self.pending_sync = None
+
+  def _reset_key_matches(self, key, mode):
+    wm_modules = ('enc', 'dyn', 'dec', 'rew', 'con')
+    agent_modules = (
+        'pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm',
+        'advnorm')
+    modules = wm_modules if mode == 'wm' else agent_modules
+    return any(key == module or key.startswith(f'{module}/') or
+               f'/{module}/' in key for module in modules)
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)

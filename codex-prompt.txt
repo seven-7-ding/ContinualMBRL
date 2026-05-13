@@ -1,0 +1,4 @@
+帮我修改脚本来新增加两个dreamer的reset功能：【1】reset_only_wm，即在每次task转换时，仅仅重置worldmodel的相关信息；【2】reset_only_agent，即仅仅重置agent而不重置world model。
+并将这两个功能对应的启动命令添加到/home/jiale/MBRL/ContinualMBRL-examine/auto_scripts/continual_mujoco_dreamer_priori.sh里面（即已经写好的mb_disabled_1_imag_length_reset_wm和mb_disabled_1_imag_length_agent）。
+修改好后，帮我调试通过（仅在cuda:6 和 7 上可以部署和调试，其他的cuda卡都不要用），并按照现在/home/jiale/MBRL/ContinualMBRL-examine/auto_scripts/continual_mujoco_dreamer_priori.sh中的命令，按照setting * 2/seed * 3，跑到cuda:6和cuda:7上，每卡3个。
+注意你应该676767轮流部署实验，否则有几率会导致报错。

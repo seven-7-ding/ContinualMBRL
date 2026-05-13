@@ -68,7 +68,10 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       epstats.add(result)
 
   stream_train = iter(agent.stream(make_stream(replay, 'train')))
-  stream_report = iter(agent.stream(make_stream(replay, 'report')))
+  # Create report stream lazily. Some small-model configs use a train replay
+  # length shorter than report_length, and eager prefetch would fail before the
+  # first report is actually needed.
+  stream_report = [None]
 
   carry_train = [agent.init_train(args.batch_size)]
   carry_report = agent.init_report(args.batch_size)
@@ -118,18 +121,25 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       )
       driver.reset(agent.init_policy)
       replay.clear()
+      reset_mode = getattr(args, 'reset_mode', 'none')
       if getattr(args, 'reset_on_switch', False):
-        agent.reset_params()
-        print(f"Agent fully reset at step {step.value} (reset_on_switch=True).")
+        reset_mode = 'all'
+      if reset_mode not in ('none', 'false', False, None):
+        agent.reset_params(reset_mode)
+        print(f"Agent reset at step {step.value} (reset_mode={reset_mode}).")
       else:
         print(f"Switched to new environment at step {step.value}.")
 
     driver(policy, steps=10)
 
-    if should_report(step) and len(replay):
+    report_length = getattr(replay, 'length', 0)
+    can_report = report_length >= args.report_length + args.replay_context
+    if should_report(step) and len(replay) and can_report:
+      if stream_report[0] is None:
+        stream_report[0] = iter(agent.stream(make_stream(replay, 'report')))
       agg = elements.Agg()
       for _ in range(args.consec_report * args.report_batches):
-        carry_report, mets = agent.report(carry_report, next(stream_report))
+        carry_report, mets = agent.report(carry_report, next(stream_report[0]))
         agg.add(mets)
       logger.add(agg.result(), prefix='report')
 

@@ -4,10 +4,10 @@
 cd /home/jiale/MBRL/ContinualMBRL-examine
 
 # Available CUDA devices (modify as needed)
-CUDA_DEVICES=(3 4 5)  # Modify to your available GPUs
+CUDA_DEVICES=(6 7 6 7 6 7)  # Modify to your available GPUs
 
 # Maximum runs per GPU
-MAX_RUNS_PER_GPU=2  # Adjust based on GPU memory
+MAX_RUNS_PER_GPU=1  # Adjust based on GPU memory
 
 # Task string (same for all settings)
 TASK_STRING="finger_spin|walker_walk|cheetah_run|reacher_easy"
@@ -28,13 +28,21 @@ TASK_INTERVAL=200000  # Match VDRL task_steps=200000
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 declare -a SETTINGS=(
-    "mb_disabled|1000"
-    "mb_disabled|2000"
-    "mb_disabled|3000"
+    # "mb_disabled_1_imag_length|1000"
+    # "mb_disabled_1_imag_length|2000"
+    # "mb_disabled_1_imag_length|3000"
 
-    "mb_disabled_reset_all|1000"
-    "mb_disabled_reset_all|2000"
-    "mb_disabled_reset_all|3000"
+    # "mb_disabled_1_imag_length_reset_all|1000"
+    # "mb_disabled_1_imag_length_reset_all|2000"
+    # "mb_disabled_1_imag_length_reset_all|3000"
+
+    "mb_disabled_1_imag_length_reset_wm|1000"
+    "mb_disabled_1_imag_length_reset_wm|2000"
+    "mb_disabled_1_imag_length_reset_wm|3000"
+
+    "mb_disabled_1_imag_length_reset_agent|1000"
+    "mb_disabled_1_imag_length_reset_agent|2000"
+    "mb_disabled_1_imag_length_reset_agent|3000"
 )
 
 # ============= Initialize =============
@@ -82,12 +90,24 @@ for setting_spec in "${SETTINGS[@]}"; do
 
     # Create log directory
     logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${task_type}/seed_$seed"
+    if [ -s "$logdir/train.log" ]; then
+        FAILED_DEPLOYMENTS+=("$setting_spec")
+        echo "SKIPPED: $task_type with seed $seed (existing log: $logdir/train.log)"
+        run_counter=$((run_counter + 1))
+        continue
+    fi
     mkdir -p "$logdir"
 
     # Construct command using continual_dmc_priori config
     reset_flag="False"
+    reset_mode="none"
     if [[ "$task_type" == *"reset_all"* ]]; then
         reset_flag="True"
+        reset_mode="all"
+    elif [[ "$task_type" == *"reset_wm"* ]]; then
+        reset_mode="reset_only_wm"
+    elif [[ "$task_type" == *"reset_agent"* ]]; then
+        reset_mode="reset_only_agent"
     fi
 
     # Use array to avoid leading-space issues from multi-line string quoting.
@@ -99,19 +119,21 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.train_ratio "$TRAIN_RATIO"
         --run.task_interval "$TASK_INTERVAL"
         --run.reset_on_switch "$reset_flag"
+        --run.reset_mode "$reset_mode"
         --seed "$seed"
         --egl_device "$device_num"
+        --agent.imag_length 2  # Override imag_length for this experiment
     )
 
     # Execute
     echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $task_type seed $seed -> GPU $device_num"
     echo "   Task order: $TASK_STRING"
-    echo "   Config: continual_dmc_priori $MODEL_SIZE  reset_on_switch=$reset_flag"
+    echo "   Config: continual_dmc_priori $MODEL_SIZE  reset_on_switch=$reset_flag reset_mode=$reset_mode"
     echo "   Logdir: $logdir"
-    CUDA_VISIBLE_DEVICES=$device_num "${cmd_args[@]}" > "$logdir/train.log" 2>&1 &
+    PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=$device_num "${cmd_args[@]}" > "$logdir/train.log" 2>&1 &
 
     run_counter=$((run_counter + 1))
-    sleep 3
+    sleep 6
     echo ""
 done
 

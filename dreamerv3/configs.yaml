@@ -76,8 +76,10 @@ defaults:
     # TODO: additional configs for continual dmc_vision.
     task_repeat: 10
     task_interval: 1e5
-    # Reset all agent parameters on each task switch (analogous to SAC reset_all).
+    # Parameter reset on each task switch. `reset_on_switch` is kept for
+    # backward-compatible full resets; `reset_mode` can be all, wm, or agent.
     reset_on_switch: false
+    reset_mode: none
 
   jax:
     platform: cuda
@@ -85,8 +87,8 @@ defaults:
     policy_devices: [0]
     train_devices: [0]
     mock_devices: 0
-    prealloc: False  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.35
+    prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
+    memory_fraction: 0.15
     jit: True
     debug: False
     expect_devices: 0
