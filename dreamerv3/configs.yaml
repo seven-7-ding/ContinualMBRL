@@ -86,7 +86,7 @@ defaults:
     prim_mode: none
     prim_collect_steps: 100
     prim_random_collect: false
-    prim_train_steps: 100000
+    prim_train_steps: 400000
     prim_imag_length: 2
 
   jax:
