@@ -16,3 +16,5 @@
 [2026-05-16 14:24:06 HKT] Seed audit/fix validation complete: py_compile, diff check, YAML parse, stable_seed, DMC-priori same/different seed, replay sampler, RandomAgent.
 [2026-05-16 14:24:33 HKT] Added PinPad seed parameter and final static checks.
 [2026-05-16 14:24:42 HKT] Completed seed reproducibility audit/fix.
+[2026-05-16 15:29:40 HKT] Follow-up task: average per-task performance episode returns before logging.
+[2026-05-16 15:30:07 HKT] Changed continual_train performance logging to average episode score/length per task per log interval.

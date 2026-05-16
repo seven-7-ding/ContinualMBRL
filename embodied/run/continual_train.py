@@ -19,6 +19,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   usage = elements.Usage(**args.usage)
   train_agg = elements.Agg()
   epstats = elements.Agg()
+  performance_agg = collections.defaultdict(elements.Agg)
   episodes = collections.defaultdict(elements.Agg)
   policy_fps = elements.FPS()
   train_fps = elements.FPS()
@@ -57,10 +58,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       result = episode.result()
       # Per-task performance logging (mirrors SAC's performance/{task}/score).
       current_task = task_list[switch_count % len(task_list)]
-      logger.add({
-          'score': result.pop('score'),
-          'length': result.pop('length'),
-      }, prefix=f'performance/{switch_count % len(task_list)}_{current_task}')
+      performance = performance_agg[f'{switch_count % len(task_list)}_{current_task}']
+      performance.add('score', result.pop('score'), agg='avg')
+      performance.add('length', result.pop('length'), agg='avg')
       rew = result.pop('rewards')
       if len(rew) > 1:
         result['delta_reward>0.01_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
@@ -173,6 +173,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(act_redo_metrics, prefix='act_redo')
       logger.add(grad_redo_metrics, prefix='grad_redo')
       logger.add(data_diversity_metrics, prefix='data_diversity')
+      for key, agg in performance_agg.items():
+        logger.add(agg.result(), prefix=f'performance/{key}')
       logger.add(epstats.result(), prefix='epstats')
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
