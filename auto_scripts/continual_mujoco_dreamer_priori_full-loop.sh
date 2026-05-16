@@ -126,7 +126,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     pid=$!
 
     run_counter=$((run_counter + 1))
-    sleep 6
+    sleep 10
     echo ""
 done
 
