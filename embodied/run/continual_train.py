@@ -161,6 +161,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         elif "train/opt/grad_redo/" in k:
           if not np.isnan(float(v)):
             grad_redo_metrics[k.replace('train/opt/grad_redo/', '')] = v
+        elif "train/data_diversity/" in k:
+          if not np.isnan(float(v)):
+            train_metrics_new[k.replace('train/', '')] = v
         else:
           train_metrics_new[k.replace('train/', '')] = v
       logger.add(train_metrics_new, prefix='train')

@@ -74,6 +74,17 @@ def _stable_rank(sv: jnp.ndarray, threshold: float = 0.99) -> jnp.ndarray:
     return f32(jnp.sum(cumsum < threshold) + 1)
 
 
+def matrix_diversity_stats(x: jnp.ndarray, threshold: float = 0.99) -> Dict[str, jnp.ndarray]:
+    """Rank and per-dimension std metrics for a [batch, dim] matrix."""
+    x = f32(x)
+    sv = jnp.linalg.svd(x, compute_uv=False)
+    return {
+        'erank': _effective_rank(sv),
+        'srank': _stable_rank(sv, threshold),
+        'mean_std': x.std(0).mean(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # FGReDo – activation-based
 # ---------------------------------------------------------------------------

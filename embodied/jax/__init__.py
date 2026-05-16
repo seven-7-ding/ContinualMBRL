@@ -12,6 +12,7 @@ from .opt import Optimizer
 
 from .FineGrainedReDo import FGReDo
 from .FineGrainedReDo import FGGradientReDo
+from .FineGrainedReDo import matrix_diversity_stats
 
 from . import nets
 from . import outs

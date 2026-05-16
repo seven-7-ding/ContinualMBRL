@@ -39,6 +39,8 @@ class Agent(embodied.jax.Agent):
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
     dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
+    self.div_obs_space = {
+        k: v for k, v in enc_space.items() if len(v.shape) <= 2}
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
@@ -85,10 +87,12 @@ class Agent(embodied.jax.Agent):
 
     # ReDo plasticity analysers (created only when enabled in config).
     redo_cfg = getattr(config, 'redo', None)
+    self.data_diversity_enabled = False
     if redo_cfg and redo_cfg.redo_enabled:
+      act_log_item = getattr(redo_cfg, 'act_log_item', redo_cfg.log_item)
       self.act_redo = embodied.jax.FGReDo(
           tau=redo_cfg.tau, mode=redo_cfg.mode,
-          frequency=redo_cfg.frequency, log_item=redo_cfg.log_item,
+          frequency=redo_cfg.frequency, log_item=act_log_item,
           reset_start=redo_cfg.reset_start, reset_end=redo_cfg.reset_end,
           skip_last_layer=redo_cfg.skip_last_layer,
           rank_threshold=redo_cfg.rank_threshold,
@@ -96,13 +100,20 @@ class Agent(embodied.jax.Agent):
     else:
       self.act_redo = None
     if redo_cfg and redo_cfg.grad_redo_enabled:
+      grad_log_item = getattr(redo_cfg, 'grad_log_item', redo_cfg.log_item)
       self.grad_redo = embodied.jax.FGGradientReDo(
           tau=redo_cfg.tau, mode=redo_cfg.mode,
-          frequency=redo_cfg.frequency, log_item=redo_cfg.log_item,
+          frequency=redo_cfg.frequency, log_item=grad_log_item,
           reset_start=redo_cfg.reset_start, reset_end=redo_cfg.reset_end,
           name='grad_redo')
     else:
       self.grad_redo = None
+    if redo_cfg:
+      act_log_item = getattr(redo_cfg, 'act_log_item', redo_cfg.log_item)
+      grad_log_item = getattr(redo_cfg, 'grad_log_item', redo_cfg.log_item)
+      self.data_diversity_enabled = (
+          (redo_cfg.redo_enabled and act_log_item != 'disabled') or
+          (redo_cfg.grad_redo_enabled and grad_log_item != 'disabled'))
 
   @property
   def policy_keys(self):
@@ -162,6 +173,16 @@ class Agent(embodied.jax.Agent):
     metrics, (carry, entries, outs, mets) = self.opt(
         self.loss, carry, obs, prevact, training=True, has_aux=True,
         gradient_redo=self.grad_redo)
+
+    should_analyze_data = self._should_analyze_data_diversity(training=True)
+    if self.data_diversity_enabled:
+      data_action = self._next_actions(prevact)
+      mets.update(self._real_data_diversity(
+          obs, outs['repfeat'], data_action, should_analyze_data))
+      mets.update(self._imag_data_diversity(
+          jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
+          jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
+          should_analyze_data))
 
     # Activation-based ReDo: forward-only pass AFTER opt() using the repfeat
     # already computed by the training step.  Being outside nj.grad means
@@ -301,7 +322,82 @@ class Agent(embodied.jax.Agent):
     outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
     if training:
       outs['imgfeat'] = imgfeat
+      outs['imgact'] = imgact
     return loss, (carry, entries, outs, metrics)
+
+  def _next_actions(self, prevact):
+    return jax.tree.map(
+        lambda x: jnp.concatenate([x[:, 1:], x[:, -1:]], 1), prevact)
+
+  def _matrix(self, x):
+    return sg(f32(x)).reshape((-1, x.shape[-1]))
+
+  def _should_analyze_data_diversity(self, training):
+    if not training or not self.data_diversity_enabled:
+      return jnp.array(False)
+    redo_cfg = self.config.redo
+    cur = self.opt.step.read()
+    in_range = jnp.ones((), bool)
+    if redo_cfg.reset_end > 0:
+      in_range = (cur >= redo_cfg.reset_start) & (cur <= redo_cfg.reset_end)
+    elif redo_cfg.reset_start > 0:
+      in_range = cur >= redo_cfg.reset_start
+    return (cur % redo_cfg.frequency == 0) & in_range
+
+  def _rank_metrics(self, prefix, values, should_analyze):
+    metrics = {}
+    threshold = getattr(self.config.redo, 'rank_threshold', 0.99)
+    for name, value in values.items():
+      matrix = self._matrix(value)
+      stats = jax.lax.cond(
+          should_analyze,
+          lambda x: embodied.jax.matrix_diversity_stats(x, threshold),
+          lambda x: {
+              'erank': f32(jnp.nan),
+              'srank': f32(jnp.nan),
+              'mean_std': f32(jnp.nan),
+          },
+          matrix)
+      metrics.update({f'{prefix}/{name}/{k}': v for k, v in stats.items()})
+    return metrics
+
+  def _obs_tensor(self, obs):
+    if not self.div_obs_space:
+      return None
+    vecs = {k: obs[k] for k in self.div_obs_space}
+    return nn.DictConcat(self.div_obs_space, 1)(vecs)
+
+  def _action_tensor(self, action):
+    return nn.DictConcat(self.act_space, 1)(action)
+
+  def _real_data_diversity(self, obs, latent, action, should_analyze):
+    obs_tensor = self._obs_tensor(obs)
+    action_tensor = self._action_tensor(action)
+    latent_tensor = self.feat2tensor(latent)
+    values = {
+        'latent_state': latent_tensor,
+        'action': action_tensor,
+        'latent_state_next_action': jnp.concatenate(
+            [latent_tensor, action_tensor], -1),
+    }
+    if obs_tensor is not None:
+      values.update({
+          'obs': obs_tensor,
+          'obs_action': jnp.concatenate([obs_tensor, action_tensor], -1),
+      })
+    return self._rank_metrics(
+        'data_diversity/real_data', values, should_analyze)
+
+  def _imag_data_diversity(self, latent, action, should_analyze):
+    action_tensor = self._action_tensor(action)
+    latent_tensor = self.feat2tensor(latent)
+    values = {
+        'action': action_tensor,
+        'latent_state': latent_tensor,
+        'latent_state_action': jnp.concatenate([latent_tensor, action_tensor], -1),
+    }
+    return self._rank_metrics(
+        'data_diversity/imag_data', values, should_analyze)
 
   def report(self, carry, data):
     if not self.config.report:

@@ -88,7 +88,7 @@ defaults:
     train_devices: [0]
     mock_devices: 0
     prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.15
+    memory_fraction: 0.08
     jit: True
     debug: False
     expect_devices: 0
@@ -152,6 +152,9 @@ defaults:
       #   'srank'    – also compute stable rank   (SVD-based, gated on frequency)
       # Examples: 'log', 'reset', 'log+erank', 'reset+erank+srank'
       log_item: log+erank+srank
+      # Optional per-analyser overrides. Defaults to log_item when omitted.
+      act_log_item: log+erank+srank
+      grad_log_item: log+erank+srank
       # Skip the last executed linear/conv layer (matches PyTorch version behaviour).
       skip_last_layer: True
       # Cumulative singular-value fraction used by srank.
@@ -159,6 +162,11 @@ defaults:
       # Optional step-range window for resets (0 = no limit).
       reset_start: 0
       reset_end: 0
+
+size0.5m: &size0_5m
+  .*\.rssm: {deter: 256, hidden: 32, classes: 2}
+  .*\.depth: 2
+  .*\.units: 32
 
 size1m: &size1m
   .*\.rssm: {deter: 512, hidden: 64, classes: 4}

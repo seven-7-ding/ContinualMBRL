@@ -20,3 +20,5 @@
     3. 各task转换时不reset，with act_redo, no gradient_redo
     4. 各task转换时不reset，no act_redo, with gradient_redo
     * 上面提到的act_redo和gradient_redo指的是“是否启动对应的layer_reset”而不指“是否启用redo的分析”。所有的run都要启用act_redo和gradient_redo的分析。上述每种setting都要有3个seed。请你参考/home/jiale/MBRL/ContinualMBRL-full-loop/auto_scripts/continual_mujoco_dreamer_priori.sh中的写法和格式来。
+
+请你确保：上述的data层面指标分析只在redo分析被启用时被同时执行；非redo_frequency步上不起作用

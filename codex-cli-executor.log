@@ -1,2 +1,12 @@
-2026-05-16 12:56:18 +0800
-Task: add real/imag data diversity metrics, size0.5m config, auto scripts, validate on CUDA 6/7 without touching existing processes.
+[2026-05-16 13:01:01 HKT] Task start: add real/imag diversity metrics, size0.5m, scripts, debug on cuda6/7 without touching existing processes.
+[2026-05-16 13:04:29 HKT] Implemented data diversity metrics, separate act/grad redo log_item config, size0.5m, and new auto script. Running static checks.
+[2026-05-16 13:26:04 HKT] CUDA6 short debug run completed successfully; checking emitted metrics.
+[2026-05-16 13:26:22 HKT] Starting CUDA7 short debug run with act/grad reset log items.
+[2026-05-16 13:28:14 HKT] CUDA7 reset-mode debug run completed successfully.
+[2026-05-16 13:28:33 HKT] Validation complete: py_compile, bash -n, CUDA6 short train, CUDA7 reset-mode short train, git diff --check. Cleaned temp debug logdirs.
+[2026-05-16 13:48:29 HKT] Follow-up: gate data diversity metrics on enabled ReDo analysis and redo frequency.
+[2026-05-16 13:49:28 HKT] Implemented ReDo-frequency gate for data diversity and NaN log filtering. Running validation.
+[2026-05-16 13:51:08 HKT] Moved data diversity out of loss/grad path and into train post-optimizer metrics.
+[2026-05-16 13:52:15 HKT] CUDA6 frequency=1000 short run completed; checking no data diversity metrics were logged.
+[2026-05-16 13:53:23 HKT] CUDA7 frequency=1 short run completed; data diversity metrics logged. Cleaned temp logdirs.
+[2026-05-16 13:53:52 HKT] Follow-up validation complete: py_compile, diff check, CUDA6 frequency=1000 produced 0 data_diversity keys, CUDA7 frequency=1 produced 24 keys. Existing processes untouched.
