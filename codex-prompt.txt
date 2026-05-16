@@ -1,0 +1,17 @@
+修改脚本，增加prim选项：
+【1】用于探索前期在少量样本上进行过拟合对于后续训练的影响。当任何一种prim被启动后，将首先使用使用初始化的agent进行128步env-step（这个参数可以让我来自行配置）（在16个env的情况下，总共收集了2048个transition）。这期间不进行对应的agent和world model的训练，只进行收集（可以使用random agent进行这一阶段的采样）。
+【2】在上述的收集数据阶段结束后，进入过拟合训练阶段：
+    1. prim_mode=only_wm: 使用收集的数据，训练连续world model 1e5次。batch_size和batch_length和基本的设置一致。
+    2. prim_mode=only_agent_multi_rollout: 使用收集的数据，先训练world model 1次，然后使用该world model，按照原脚本中训练agent的方法（也就是让world model rollout数据提供给agent进行训练）1e5次。
+    3. prim_mode=only_agent_one_rollou: 使用收集的数据，先训练world model 1次，然后使用该world model 进行1次rollout（和原先脚本中rollout的方法一样），再反复使用这批被rollout的数据来训练agent 1e5次。
+    3. prim_mode=both: 使用收集的数据，按照原先脚本的训练方法同时训练world model和agent共1e5次。
+【3】在结束上述的overfit阶段后，回到常规的训练阶段；在上述过拟合的训练阶段收集到的训练数据（例如act_redo、grad_redo、涉及到的data_diversity等指标）也应该按照原先的脚本要求进行logging，记录的frequency也和原脚本一致。也就是说，这里的prim阶段的训练步数都计入总的训练步数中（也就是/home/jiale/MBRL/ContinualMBRL-primacy-bias/embodied/run/continual_train.py中log的横坐标，与这里prim训练的1e5步一一对应）。
+【4】注意，prim仅在整个continual task开始的阶段有效；后续的task switch之后，不要再oevrfit了。
+【5】在/home/jiale/MBRL/ContinualMBRL-primacy-bias/auto_scripts/continual_mujoco_dreamer_priori_primacy-bias.sh里面配置以下实验：
+    1. only_wm
+    2. only_agent_multi_rollout
+    3. only_agent_one_rollou
+    4. both；
+    * 上述setting，各3个seed；
+    且脚本启动的实验应该和/home/jiale/MBRL/ContinualMBRL-full-loop/auto_scripts/continual_mujoco_dreamer_priori_full-loop.sh中启动的脚本放在一个wandb的project下，仅仅改变其group的名称以进行对比。
+【6】仅在cuda6/7上进行debug、调试，不要动任何已经被开始的进程。
