@@ -82,7 +82,6 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.prim_collect_steps "$PRIM_COLLECT_STEPS"
         --run.prim_random_collect False
         --run.prim_train_steps "$PRIM_TRAIN_STEPS"
-        --run.prim_imag_length 2
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length 15
@@ -99,7 +98,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=$device_num "${cmd_args[@]}" > "$logdir/train.log" 2>&1 &
 
     run_counter=$((run_counter + 1))
-    sleep 6
+    sleep 20
     echo ""
 done
 
