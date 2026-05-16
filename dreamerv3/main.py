@@ -165,6 +165,7 @@ def make_agent(config):
       batch_size=config.batch_size,
       batch_length=config.batch_length,
       replay_context=config.replay_context,
+      prim_imag_length=config.run.prim_imag_length,
       report_length=config.report_length,
       replica=config.replica,
       replicas=config.replicas,

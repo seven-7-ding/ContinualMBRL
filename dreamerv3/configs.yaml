@@ -84,9 +84,10 @@ defaults:
     # training only. Modes: none, only_wm, only_agent_multi_rollout,
     # only_agent_one_rollout, both.
     prim_mode: none
-    prim_collect_steps: 128
+    prim_collect_steps: 100
     prim_random_collect: false
     prim_train_steps: 100000
+    prim_imag_length: 2
 
   jax:
     platform: cuda

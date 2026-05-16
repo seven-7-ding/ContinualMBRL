@@ -88,8 +88,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         replay.update(outs['replay'])
       train_agg.add(mets, prefix='train')
 
-  def add_train_metrics(mets, outs=None):
-    train_fps.step(batch_steps)
+  def add_train_metrics(mets, outs=None, steps=batch_steps):
+    train_fps.step(steps)
     if outs and 'replay' in outs:
       replay.update(outs['replay'])
     train_agg.add(mets, prefix='train')
@@ -139,7 +139,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     rng = random_policy.rng
     act = {}
     batch = len(obs['is_first'])
-    for key, space in driver.act_space.items():
+    for key, space in random_policy.act_space.items():
       if key == 'reset':
         continue
       low, high = space.low, space.high
@@ -156,6 +156,76 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         act[key] = rng.uniform(low, high, (batch, *space.shape)).astype(space.dtype)
     return carry, act, {}
   random_policy.rng = np.random.default_rng(getattr(args, 'seed', 0))
+  random_policy.act_space = None
+
+  def stream_lengths():
+    return [len(x) for x in getattr(replay, 'streams', {}).values()]
+
+  def getseq_len(chunkid, index, length):
+    chunk = replay.chunks[chunkid]
+    available = chunk.length - index
+    if available >= length:
+      seq = chunk.slice(index, length)
+      return {k: [v] for k, v in seq.items()}
+    parts = [chunk.slice(index, available)]
+    remaining = length - available
+    while remaining > 0:
+      chunk = replay.chunks[chunk.succ]
+      used = min(remaining, chunk.length)
+      parts.append(chunk.slice(0, used))
+      remaining -= used
+    return {k: [p[k] for p in parts] for k in parts[0].keys()}
+
+  def make_prim_stream(batch_size, raw_length):
+    rng = np.random.default_rng(getattr(args, 'seed', 0) + 17)
+
+    def sample():
+      with replay.rwlock.reading:
+        candidates = []
+        for stream in replay.streams.values():
+          stream = list(stream)
+          limit = len(stream) - raw_length + 1
+          candidates += stream[:max(0, limit)]
+        if not candidates:
+          raise RuntimeError(
+              'Prim replay has no sequence candidate with raw length '
+              f'{raw_length}. Current stream lengths: {stream_lengths()}')
+        seqs = []
+        for _ in range(batch_size):
+          chunkid, index = candidates[rng.integers(0, len(candidates))]
+          seqs.append(getseq_len(chunkid, index, raw_length))
+        data = replay._assemble_batch(seqs, 0, raw_length)
+        data = replay._annotate_batch(data, [False] * batch_size, True)
+        data['consec'] = np.zeros(data['is_first'].shape, np.int32)
+        return data
+
+    return iter(agent.stream(embodied.streams.Stateless(sample)))
+
+  def make_prim_train_state():
+    lengths = stream_lengths()
+    maxlen = max(lengths) if lengths else 0
+    target_raw = args.batch_length + args.replay_context
+    if len(replay) > 0:
+      return stream_train, carry_train, batch_steps, args.batch_length
+    if maxlen <= args.replay_context:
+      raise RuntimeError(
+          'Prim collection did not produce enough data for even one '
+          f'contexted sequence. Max stream length={maxlen}, '
+          f'replay_context={args.replay_context}.')
+    max_batch_length = min(maxlen, target_raw) - args.replay_context
+    divisors = [x for x in range(1, max_batch_length + 1) if batch_steps % x == 0]
+    prim_batch_length = max(divisors)
+    prim_batch_size = batch_steps // prim_batch_length
+    prim_raw = prim_batch_length + args.replay_context
+    prim_steps = prim_batch_size * prim_batch_length
+    print(
+        'Prim uses short replay batches because no full-length replay item is '
+        f'available: stream_lengths={lengths}, max_raw_length={maxlen}, raw_length={prim_raw}, '
+        f'batch_length={prim_batch_length}, batch_size={prim_batch_size}, '
+        f'sampled_transitions={prim_steps} (target={batch_steps}).')
+    prim_stream = make_prim_stream(prim_batch_size, prim_raw)
+    prim_carry = [agent.init_train(prim_batch_size)]
+    return prim_stream, prim_carry, prim_steps, prim_batch_length
 
   def run_prim_phase():
     prim_mode = getattr(args, 'prim_mode', 'none')
@@ -179,43 +249,53 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         print('Prim random collection disabled because replay_context is on.')
         use_random = False
       collect_policy = random_policy if use_random else policy
-      driver(collect_policy, steps=collect_steps * args.envs)
-    if len(replay) < args.batch_size * args.batch_length:
-      raise RuntimeError(
-          'Prim collection did not produce enough replay data: '
-          f'{len(replay)} < {args.batch_size * args.batch_length}')
+      prim_fns = [bind(make_env, 0, switch_count=switch_count)]
+      prim_driver = embodied.Driver(prim_fns, parallel=not args.debug)
+      prim_driver.on_step(lambda tran, _: step.increment())
+      prim_driver.on_step(lambda tran, _: policy_fps.step())
+      prim_driver.on_step(replay.add)
+      prim_driver.on_step(logfn)
+      prim_driver.reset(agent.init_policy)
+      random_policy.act_space = prim_driver.act_space
+      try:
+        prim_driver(collect_policy, steps=collect_steps)
+      finally:
+        prim_driver.close()
+    prim_stream, prim_carry, prim_steps, prim_batch_length = make_prim_train_state()
 
     cached_rollout = None
     if prim_mode in ('only_agent_multi_rollout', 'only_agent_one_rollou',
                      'only_agent_one_rollout'):
-      batch = next(stream_train)
-      carry_train[0], outs, mets = agent.train_wm(carry_train[0], batch)
-      add_train_metrics(mets, outs)
+      batch = next(prim_stream)
+      prim_carry[0], outs, mets = agent.train_wm(prim_carry[0], batch)
+      add_train_metrics(mets, outs, prim_steps)
       step.increment()
       if should_log(step):
         write_logs()
       if prim_mode in ('only_agent_one_rollou', 'only_agent_one_rollout'):
-        cached_rollout = agent.prim_rollout(carry_train[0], next(stream_train))
+        cached_rollout = agent.prim_rollout(prim_carry[0], next(prim_stream))
 
     for prim_step in range(train_steps):
       if prim_mode == 'only_wm':
-        carry_train[0], outs, mets = agent.train_wm(
-            carry_train[0], next(stream_train))
+        prim_carry[0], outs, mets = agent.train_wm(
+            prim_carry[0], next(prim_stream))
       elif prim_mode == 'only_agent_multi_rollout':
-        carry_train[0], outs, mets = agent.train_agent(
-            carry_train[0], next(stream_train))
+        prim_carry[0], outs, mets = agent.train_agent(
+            prim_carry[0], next(prim_stream))
       elif prim_mode in ('only_agent_one_rollou', 'only_agent_one_rollout'):
-        carry_train[0], outs, mets = agent.train_agent_rollout(
-            carry_train[0], cached_rollout)
+        prim_carry[0], outs, mets = agent.train_agent_rollout(
+            prim_carry[0], cached_rollout)
       elif prim_mode == 'both':
-        carry_train[0], outs, mets = agent.train(
-            carry_train[0], next(stream_train))
-      add_train_metrics(mets, outs)
+        prim_carry[0], outs, mets = agent.train_prim_both(
+            prim_carry[0], next(prim_stream))
+      add_train_metrics(mets, outs, prim_steps)
       step.increment()
       if should_log(step):
         write_logs()
       if (prim_step + 1) % 10000 == 0:
         print(f'Prim phase progress: {prim_step + 1}/{train_steps}')
+    if prim_carry is not carry_train:
+      carry_train[0] = agent.init_train(args.batch_size)
     print(f'Finished prim phase at step {step.value}.')
 
   cp = elements.Checkpoint(logdir / 'ckpt')
@@ -233,6 +313,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   # TODO: first env.
   should_switch(step)
   switch_count = 0
+  run_prim_phase()
+
   fns = [bind(make_env, i, switch_count=switch_count) for i in range(args.envs)]
   driver = embodied.Driver(fns, parallel=not args.debug)
   driver.on_step(lambda tran, _: step.increment())
@@ -240,8 +322,6 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   driver.on_step(replay.add)
   driver.on_step(logfn)
   driver.reset(agent.init_policy)
-
-  run_prim_phase()
   driver.on_step(trainfn)
   
   while step < args.steps:

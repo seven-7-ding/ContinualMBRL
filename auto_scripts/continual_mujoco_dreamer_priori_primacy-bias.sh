@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-primacy-bias
 
 # Debug/deploy only on CUDA 6/7 for this primacy-bias sweep.
-CUDA_DEVICES=(2 3 4 5)
+CUDA_DEVICES=(6 7 6 7 6 7 0 1 2 3 4 5)
 
 TASK_STRING="finger_spin|walker_walk|cheetah_run|reacher_easy"
 
@@ -22,21 +22,21 @@ PRIM_COLLECT_STEPS=128
 PRIM_TRAIN_STEPS=100000
 
 declare -a SETTINGS=(
-    # "only_wm|1000"
-    # "only_wm|2000"
-    # "only_wm|3000"
+    "only_wm|1000"
+    "only_wm|2000"
+    "only_wm|3000"
 
-    # "only_agent_multi_rollout|1000"
-    # "only_agent_multi_rollout|2000"
-    # "only_agent_multi_rollout|3000"
+    "only_agent_multi_rollout|1000"
+    "only_agent_multi_rollout|2000"
+    "only_agent_multi_rollout|3000"
 
-    # "only_agent_one_rollout|1000"
-    # "only_agent_one_rollout|2000"
+    "only_agent_one_rollout|1000"
+    "only_agent_one_rollout|2000"
     "only_agent_one_rollout|3000"
 
-    # "both|1000"
-    # "both|2000"
-    # "both|3000"
+    "both|1000"
+    "both|2000"
+    "both|3000"
 )
 
 run_counter=0
@@ -82,6 +82,7 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.prim_collect_steps "$PRIM_COLLECT_STEPS"
         --run.prim_random_collect False
         --run.prim_train_steps "$PRIM_TRAIN_STEPS"
+        --run.prim_imag_length 2
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length 15

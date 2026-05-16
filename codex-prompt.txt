@@ -15,3 +15,10 @@
     * 上述setting，各3个seed；
     且脚本启动的实验应该和/home/jiale/MBRL/ContinualMBRL-full-loop/auto_scripts/continual_mujoco_dreamer_priori_full-loop.sh中启动的脚本放在一个wandb的project下，仅仅改变其group的名称以进行对比。
 【6】仅在cuda6/7上进行debug、调试，不要动任何已经被开始的进程。
+
+在only_agent_multi_rollout、only_agent_one_rollout、both这三种prim的mode中，当world model进行rollout时，其imag_length设置为2（而非使用config中的16）；而在正式的训练过程中，使用正常的imag_length。
+
+但是在prim时，有可能会发生没有任何一个replay buffer中的traj已经被完整跑完的情况，因此请你更
+  改脚本：当没有任何一个traj的长度大于等于batch_length+replay_context的情况下，修改world model
+  的训练时的batch_length为当前buffer中的最大长度，并对应修改batch_size，使得总抽样的transition
+  数目保持原样；在正式的训练过程中，将这两个参数再调回原先的值。

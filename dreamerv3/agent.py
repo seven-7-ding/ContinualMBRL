@@ -170,6 +170,9 @@ class Agent(embodied.jax.Agent):
   def train(self, carry, data):
     return self._train_with_loss(carry, data, self.loss)
 
+  def train_prim_both(self, carry, data):
+    return self._train_with_loss(carry, data, self.loss_prim)
+
   def train_wm(self, carry, data):
     return self._train_with_loss(carry, data, self.loss_wm)
 
@@ -194,7 +197,8 @@ class Agent(embodied.jax.Agent):
 
   def prim_rollout(self, carry, data):
     carry, obs, prevact, _ = self._apply_replay_context(carry, data)
-    return self._rollout_from_replay(carry, obs, prevact)
+    return self._rollout_from_replay(
+        carry, obs, prevact, imag_length=self.config.prim_imag_length)
 
   def _train_with_loss(self, carry, data, lossfn):
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
@@ -238,6 +242,13 @@ class Agent(embodied.jax.Agent):
     return carry, outs, metrics
 
   def loss(self, carry, obs, prevact, training):
+    return self._loss(carry, obs, prevact, training, self.config.imag_length)
+
+  def loss_prim(self, carry, obs, prevact, training):
+    return self._loss(
+        carry, obs, prevact, training, self.config.prim_imag_length)
+
+  def _loss(self, carry, obs, prevact, training, imag_length):
     enc_carry, dyn_carry, dec_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
@@ -271,7 +282,7 @@ class Agent(embodied.jax.Agent):
 
     # Imagination
     K = min(self.config.imag_last or T, T)
-    H = self.config.imag_length
+    H = imag_length
     starts = self.dyn.starts(dyn_entries, dyn_carry, K)
     policyfn = lambda feat: sample(self.pol(self.feat2tensor(feat), 1))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
@@ -373,7 +384,8 @@ class Agent(embodied.jax.Agent):
     metrics = {}
     rollout, new_carry, entries, tokens, repfeat, mets = (
         self._rollout_from_replay(
-            carry, obs, prevact, return_context=True, training=training))
+            carry, obs, prevact, return_context=True, training=training,
+            imag_length=self.config.prim_imag_length))
     metrics.update(mets)
 
     inp = self.feat2tensor(sg(rollout['imgfeat']))
@@ -399,7 +411,8 @@ class Agent(embodied.jax.Agent):
     return loss, (new_carry, entries, outs, metrics)
 
   def _rollout_from_replay(
-      self, carry, obs, prevact, return_context=False, training=False):
+      self, carry, obs, prevact, return_context=False, training=False,
+      imag_length=None):
     enc_carry, dyn_carry, dec_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
@@ -409,7 +422,7 @@ class Agent(embodied.jax.Agent):
         dyn_carry, tokens, prevact, reset, training=False)
 
     K = min(self.config.imag_last or T, T)
-    H = self.config.imag_length
+    H = imag_length or self.config.imag_length
     starts = jax.tree.map(sg, self.dyn.starts(dyn_entries, dyn_carry, K))
     policyfn = lambda feat: sample(self.pol(self.feat2tensor(sg(feat)), 1))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)

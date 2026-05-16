@@ -150,6 +150,11 @@ class Agent(embodied.Agent):
         (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
         return_params=True, donate_params=True, first_outnums=(3,),
         **shared_kwargs)
+    self._train_prim_both = transform.apply(
+        nj.pure(self.model.train_prim_both), self.train_mesh,
+        (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+        return_params=True, donate_params=True, first_outnums=(3,),
+        **shared_kwargs)
     self._train_agent = transform.apply(
         nj.pure(self.model.train_agent), self.train_mesh,
         (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
@@ -286,6 +291,10 @@ class Agent(embodied.Agent):
   @elements.timer.section('jaxagent_train_wm')
   def train_wm(self, carry, data):
     return self._train_impl(self._train_wm, carry, data)
+
+  @elements.timer.section('jaxagent_train_prim_both')
+  def train_prim_both(self, carry, data):
+    return self._train_impl(self._train_prim_both, carry, data)
 
   @elements.timer.section('jaxagent_train_agent')
   def train_agent(self, carry, data):
