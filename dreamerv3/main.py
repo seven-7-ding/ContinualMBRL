@@ -19,6 +19,11 @@ import portal
 import ruamel.yaml as yaml
 
 
+def stable_seed(*parts):
+  parts = [int(x) for x in parts]
+  return int(np.random.SeedSequence(parts).generate_state(1, np.uint32)[0])
+
+
 def main(argv=None):
   from .agent import Agent
   [elements.print(line) for line in Agent.banner]
@@ -46,6 +51,7 @@ def main(argv=None):
   if not config.script.endswith(('_env', '_replay')):
     logdir.mkdir()
     config.save(logdir / 'config.yaml')
+  elements.UUID.reset(debug=bool(config.run.debug))
 
   def init():
     elements.timer.global_timer.enabled = config.logger.timer
@@ -148,7 +154,7 @@ def make_agent(config):
   act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
   env.close()
   if config.random_agent:
-    return embodied.RandomAgent(obs_space, act_space)
+    return embodied.RandomAgent(obs_space, act_space, seed=config.seed)
   cpdir = elements.Path(config.logdir)
   cpdir = cpdir.parent if config.replicas > 1 else cpdir
   return Agent(obs_space, act_space, elements.Config(
@@ -225,7 +231,8 @@ def make_replay(config, folder, mode='train'):
     directory /= f'{config.replica:05}'
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
-      chunksize=config.replay.chunksize, directory=directory)
+      chunksize=config.replay.chunksize, directory=directory,
+      seed=stable_seed(config.seed, config.replica, 10, mode == 'eval'))
 
   if config.replay.fracs.uniform < 1 and mode == 'train':
     assert config.jax.compute_dtype in ('bfloat16', 'float32'), (
@@ -233,11 +240,15 @@ def make_replay(config, folder, mode='train'):
         'outputs that are incompatible with prioritized replay.')
     recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
     selectors = embodied.replay.selectors
+    seed = stable_seed(config.seed, config.replica, 20)
+    prio_kwargs = dict(config.replay.prio)
+    prio_kwargs.pop('seed', None)
     kwargs['selector'] = selectors.Mixture(dict(
-        uniform=selectors.Uniform(),
-        priority=selectors.Prioritized(**config.replay.prio),
-        recency=selectors.Recency(recency),
-    ), config.replay.fracs)
+        uniform=selectors.Uniform(stable_seed(seed, 1)),
+        priority=selectors.Prioritized(
+            **prio_kwargs, seed=stable_seed(seed, 2)),
+        recency=selectors.Recency(recency, seed=stable_seed(seed, 3)),
+    ), config.replay.fracs, seed=stable_seed(seed, 4))
 
   return embodied.replay.Replay(**kwargs)
 
@@ -260,7 +271,7 @@ def make_env(config, index, switch_count=0, **overrides):
     kwargs = config.env.get(suite, {})
     kwargs.update(overrides)
     if kwargs.pop('use_seed', False):
-      kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+      kwargs['seed'] = stable_seed(config.seed, config.replica, index, switch_count)
     if kwargs.pop('use_logdir', False):
       kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
     env = ctor(task, **kwargs)
@@ -295,33 +306,11 @@ def make_env(config, index, switch_count=0, **overrides):
   kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
   if kwargs.pop('use_seed', False):
-    kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+    kwargs['seed'] = stable_seed(config.seed, config.replica, index)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
 
-  ## Check each dmc envs.
-  {# for task in [
-  #   "walker_walk",
-  #   "quadruped_run",
-  #   "quadruped_walk",
-  #   "reacher_easy",
-  #   "reacher_hard",
-  #   "hopper_stand",
-  #   "hopper_hop",
-  #   "fish_swim",
-  #   "fish_upright",
-  #   "finger_turn_easy",
-  #   "finger_turn_hard",
-  #   "finger_spin"
-  # ]:
-  #   print(f"Applying DreamerV3 wrappers to {task}...")
-  #   module = importlib.import_module('embodied.envs.dmc')
-  #   cls = getattr(module, 'DMC')
-  #   env = cls(task, **kwargs)
-  #   print(f"Action space: {env.act_space}")
-  #   print(f"Observation space: {env.obs_space}")
-  }
   return wrap_env(env, config)
 
 

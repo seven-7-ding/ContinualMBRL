@@ -35,9 +35,9 @@ defaults:
     atari100k: {size: [64, 64], repeat: 4, sticky: False, gray: False, actions: needed, lives: unused, noops: 30, autostart: False, resize: pillow, clip_reward: False}
     dmlab: {size: [64, 64], repeat: 4, episodic: True, use_seed: True}
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
-    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
-    continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, task_action_space: [12]}
-    continual_dmc_priori: {repeat: 1, obs_dim: 32, task_action_space: [6], camera: -1, size: [64, 64]}
+    dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, use_seed: True}
+    continual_dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1, task_action_space: [12], use_seed: True}
+    continual_dmc_priori: {repeat: 1, obs_dim: 32, task_action_space: [6], camera: -1, size: [64, 64], use_seed: True}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
 
   replay:
@@ -88,7 +88,7 @@ defaults:
     train_devices: [0]
     mock_devices: 0
     prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.08
+    memory_fraction: 0.15
     jit: True
     debug: False
     expect_devices: 0

@@ -60,7 +60,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add({
           'score': result.pop('score'),
           'length': result.pop('length'),
-      }, prefix=f'performance/{current_task}')
+      }, prefix=f'performance/{switch_count % len(task_list)}_{current_task}')
       rew = result.pop('rewards')
       if len(rew) > 1:
         result['delta_reward>0.01_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
@@ -150,6 +150,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       opt_metrics = {}
       act_redo_metrics = {}
       grad_redo_metrics = {}
+      data_diversity_metrics = {}
       for k, v in train_metrics.items():
         if "train/loss/" in k and "opt" not in k:
           loss_metrics[k.replace('train/loss/', '')] = v
@@ -163,7 +164,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
             grad_redo_metrics[k.replace('train/opt/grad_redo/', '')] = v
         elif "train/data_diversity/" in k:
           if not np.isnan(float(v)):
-            train_metrics_new[k.replace('train/', '')] = v
+            data_diversity_metrics[k.replace('train/data_diversity/', '')] = v
         else:
           train_metrics_new[k.replace('train/', '')] = v
       logger.add(train_metrics_new, prefix='train')
@@ -171,6 +172,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(opt_metrics, prefix='opt')
       logger.add(act_redo_metrics, prefix='act_redo')
       logger.add(grad_redo_metrics, prefix='grad_redo')
+      logger.add(data_diversity_metrics, prefix='data_diversity')
       logger.add(epstats.result(), prefix='epstats')
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')

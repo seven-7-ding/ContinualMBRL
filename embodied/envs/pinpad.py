@@ -18,7 +18,7 @@ class PinPad(embodied.Env):
       '8': (  0, 128, 128),
   }
 
-  def __init__(self, task, length=10000):
+  def __init__(self, task, length=10000, seed=None):
     assert length > 0
     layout = {
         'three': LAYOUT_THREE,
@@ -31,7 +31,7 @@ class PinPad(embodied.Env):
     self.layout = np.array([list(line) for line in layout.split('\n')]).T
     assert self.layout.shape == (16, 14), self.layout.shape
     self.length = length
-    self.random = np.random.RandomState()
+    self.random = np.random.RandomState(seed)
     self.pads = set(self.layout.flatten().tolist()) - set('* #\n')
     self.target = tuple(sorted(self.pads))
     self.spawns = []

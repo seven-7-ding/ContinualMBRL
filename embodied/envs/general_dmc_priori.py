@@ -96,6 +96,7 @@ class GeneralDMCPriori(embodied.Env):
         obs_dim=32,
         camera=-1,
         size=(64, 64),
+        seed=None,
     ):
         if task_action_space is None:
             task_action_space = [6]
@@ -113,7 +114,8 @@ class GeneralDMCPriori(embodied.Env):
             elif domain == 'rodent':
                 dm_env = getattr(basic_rodent_2020, task)()
             else:
-                dm_env = suite.load(domain, task)
+                task_kwargs = {'random': seed} if seed is not None else None
+                dm_env = suite.load(domain, task, task_kwargs=task_kwargs)
         else:
             dm_env = env
             domain, task = 'unknown', 'unknown'

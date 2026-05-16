@@ -9,11 +9,20 @@ import numpy as np
 class FromGym(embodied.Env):
 
   def __init__(self, env, obs_key='image', act_key='action', **kwargs):
+    seed = kwargs.pop('seed', None)
     if isinstance(env, str):
       self._env = gym.make(env, **kwargs)
     else:
       assert not kwargs, kwargs
       self._env = env
+    self._seed = seed
+    self._needs_seed_reset = seed is not None
+    if seed is not None:
+      for space in (self._env.action_space, self._env.observation_space):
+        if hasattr(space, 'seed'):
+          space.seed(seed)
+      if hasattr(self._env, 'seed'):
+        self._env.seed(seed)
     self._obs_dict = hasattr(self._env.observation_space, 'spaces')
     self._act_dict = hasattr(self._env.action_space, 'spaces')
     self._obs_key = obs_key
@@ -57,7 +66,16 @@ class FromGym(embodied.Env):
   def step(self, action):
     if action['reset'] or self._done:
       self._done = False
-      obs = self._env.reset()
+      if self._needs_seed_reset:
+        try:
+          obs = self._env.reset(seed=self._seed)
+        except TypeError:
+          obs = self._env.reset()
+        self._needs_seed_reset = False
+      else:
+        obs = self._env.reset()
+      if isinstance(obs, tuple) and len(obs) == 2:
+        obs, self._info = obs
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
       action = self._unflatten(action)

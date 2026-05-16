@@ -13,10 +13,10 @@ MAX_RUNS_PER_GPU=1
 TASK_STRING="finger_spin|walker_walk|cheetah_run|reacher_easy"
 
 # Prefix for log directories
-PREFIX="continual_sac_dreamer_full_loop"
+PREFIX="continual_dreamer_full_loop"
 
 # Model configuration
-MODEL_SIZE="size0.5m"  # Options: size0.5m, size1m, size12m, size50m, etc.
+MODEL_SIZE="size1m"  # Options: size0.5m, size1m, size12m, size50m, etc.
 
 # Base log directory
 BASE_LOGDIR_ROOT="logdir"
@@ -50,42 +50,6 @@ run_counter=0
 TOTAL_RUNS=${#SETTINGS[@]}
 
 declare -a FAILED_DEPLOYMENTS=()
-declare -A GPU_PIDS=()
-
-for device_num in "${CUDA_DEVICES[@]}"; do
-    GPU_PIDS[$device_num]=""
-done
-
-refresh_gpu_pids() {
-    local device_num=$1
-    local alive=""
-    for pid in ${GPU_PIDS[$device_num]}; do
-        if kill -0 "$pid" 2>/dev/null; then
-            alive="$alive $pid"
-        fi
-    done
-    GPU_PIDS[$device_num]="$alive"
-}
-
-count_gpu_pids() {
-    local device_num=$1
-    refresh_gpu_pids "$device_num"
-    set -- ${GPU_PIDS[$device_num]}
-    echo $#
-}
-
-wait_for_slot() {
-    while true; do
-        for device_num in "${CUDA_DEVICES[@]}"; do
-            if [ "$(count_gpu_pids "$device_num")" -lt "$MAX_RUNS_PER_GPU" ]; then
-                echo "$device_num"
-                return
-            fi
-        done
-        echo "All tracked GPUs are busy; waiting 60s for a free slot..." >&2
-        sleep 60
-    done
-}
 
 # ============= Run Experiments =============
 echo "============================================"
@@ -111,9 +75,8 @@ for setting_spec in "${SETTINGS[@]}"; do
     fi
     mkdir -p "$logdir"
 
-    # Determine which GPU to use only for runs that will actually launch.
-    # This avoids blocking on busy GPUs for runs that are skipped anyway.
-    device_num=$(wait_for_slot)
+    # Assign GPU by sequential index (no waiting).
+    device_num="${CUDA_DEVICES[$run_counter % ${#CUDA_DEVICES[@]}]}"
 
     # Task-switch reset configuration.
     reset_flag="False"
@@ -146,7 +109,7 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.reset_mode "$reset_mode"
         --seed "$seed"
         --egl_device "$device_num"
-        --agent.imag_length 2
+        --agent.imag_length 15
         --agent.redo.redo_enabled True
         --agent.redo.grad_redo_enabled True
         --agent.redo.act_log_item "$act_log_item"
@@ -161,7 +124,6 @@ for setting_spec in "${SETTINGS[@]}"; do
     echo "   Logdir: $logdir"
     PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=$device_num "${cmd_args[@]}" > "$logdir/train.log" 2>&1 &
     pid=$!
-    GPU_PIDS[$device_num]="${GPU_PIDS[$device_num]} $pid"
 
     run_counter=$((run_counter + 1))
     sleep 6

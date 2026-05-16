@@ -19,7 +19,8 @@ class GeneralDMC(embodied.Env):
   )
 
   def __init__(
-      self, env, repeat=1, task_action_space=[6], size=(64, 64), proprio=True, image=True, camera=-1):
+      self, env, repeat=1, task_action_space=[6], size=(64, 64),
+      proprio=True, image=True, camera=-1, seed=None):
     if 'MUJOCO_GL' not in os.environ:
       os.environ['MUJOCO_GL'] = 'egl'
     if isinstance(env, str):
@@ -37,7 +38,8 @@ class GeneralDMC(embodied.Env):
         # camera 5: eyes
         env = getattr(basic_rodent_2020, task)()
       else:
-        env = suite.load(domain, task)
+        task_kwargs = {'random': seed} if seed is not None else None
+        env = suite.load(domain, task, task_kwargs=task_kwargs)
     self._dmenv = env
     self._env = from_dm.FromDM(self._dmenv)
     self._env = embodied.wrappers.ActionRepeat(self._env, repeat)
@@ -83,4 +85,3 @@ class GeneralDMC(embodied.Env):
       if np.issubdtype(space.dtype, np.floating):
         assert np.isfinite(obs[key]).all(), (key, obs[key])
     return obs
-

@@ -10,3 +10,9 @@
 [2026-05-16 13:52:15 HKT] CUDA6 frequency=1000 short run completed; checking no data diversity metrics were logged.
 [2026-05-16 13:53:23 HKT] CUDA7 frequency=1 short run completed; data diversity metrics logged. Cleaned temp logdirs.
 [2026-05-16 13:53:52 HKT] Follow-up validation complete: py_compile, diff check, CUDA6 frequency=1000 produced 0 data_diversity keys, CUDA7 frequency=1 produced 24 keys. Existing processes untouched.
+[2026-05-16 14:19:44 HKT] Follow-up task: audit and fix seed propagation for reproducibility across random components.
+[2026-05-16 14:22:35 HKT] Implemented stable seed propagation for replay, DMC envs, gym wrapper, and random agent. Running validation.
+[2026-05-16 14:23:14 HKT] Validation: DMC-priori same seed matched, different seed differed. Checking replay determinism and final diff.
+[2026-05-16 14:24:06 HKT] Seed audit/fix validation complete: py_compile, diff check, YAML parse, stable_seed, DMC-priori same/different seed, replay sampler, RandomAgent.
+[2026-05-16 14:24:33 HKT] Added PinPad seed parameter and final static checks.
+[2026-05-16 14:24:42 HKT] Completed seed reproducibility audit/fix.
