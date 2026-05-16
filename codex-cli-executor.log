@@ -1,0 +1,2 @@
+2026-05-16 12:56:18 +0800
+Task: add real/imag data diversity metrics, size0.5m config, auto scripts, validate on CUDA 6/7 without touching existing processes.
