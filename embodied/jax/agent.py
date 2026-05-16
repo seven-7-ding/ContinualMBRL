@@ -145,6 +145,25 @@ class Agent(embodied.Agent):
         (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
         return_params=True, donate_params=True, first_outnums=(3,),
         **shared_kwargs)
+    self._train_wm = transform.apply(
+        nj.pure(self.model.train_wm), self.train_mesh,
+        (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+        return_params=True, donate_params=True, first_outnums=(3,),
+        **shared_kwargs)
+    self._train_agent = transform.apply(
+        nj.pure(self.model.train_agent), self.train_mesh,
+        (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+        return_params=True, donate_params=True, first_outnums=(3,),
+        **shared_kwargs)
+    self._train_agent_rollout = transform.apply(
+        nj.pure(self.model.train_agent_rollout), self.train_mesh,
+        (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+        return_params=True, donate_params=True, first_outnums=(3,),
+        **shared_kwargs)
+    self._prim_rollout = transform.apply(
+        nj.pure(self.model.prim_rollout), self.train_mesh,
+        (tp, tm, ts, ts), (ts,), ar,
+        single_output=True, **shared_kwargs)
     self._report = transform.apply(
         nj.pure(self.model.report), self.train_mesh,
         (tp, tm, ts, ts), (ts, tm), ar,
@@ -262,16 +281,50 @@ class Agent(embodied.Agent):
 
   @elements.timer.section('jaxagent_train')
   def train(self, carry, data):
+    return self._train_impl(self._train, carry, data)
+
+  @elements.timer.section('jaxagent_train_wm')
+  def train_wm(self, carry, data):
+    return self._train_impl(self._train_wm, carry, data)
+
+  @elements.timer.section('jaxagent_train_agent')
+  def train_agent(self, carry, data):
+    return self._train_impl(self._train_agent, carry, data)
+
+  @elements.timer.section('jaxagent_train_agent_rollout')
+  def train_agent_rollout(self, carry, data):
+    seed = self._next_seed()
+    data = internal.device_put(data, self.train_sharded)
+    return self._train_impl(self._train_agent_rollout, carry, data, seed=seed)
+
+  @elements.timer.section('jaxagent_prim_rollout')
+  def prim_rollout(self, carry, data):
     seed = data.pop('seed')
     assert sorted(data.keys()) == sorted(self.spaces.keys()), (
         sorted(data.keys()), sorted(self.spaces.keys()))
+    with self.train_lock:
+      rollout = self._prim_rollout(self.params, seed, carry, data)
+      rollout = self._take_outs(internal.fetch_async(rollout))
+    return rollout
+
+  def _next_seed(self):
+    with self.n_batches.lock:
+      counter = self.n_batches.value
+      self.n_batches.value += 1
+    return self._seeds(counter, self.train_mirrored)
+
+  def _train_impl(self, train_fn, carry, data, seed=None):
+    if seed is None:
+      seed = data.pop('seed')
+      assert sorted(data.keys()) == sorted(self.spaces.keys()), (
+          sorted(data.keys()), sorted(self.spaces.keys()))
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
     with self.train_lock:
       with elements.timer.section('jit_train'):
         with jax.profiler.StepTraceAnnotation(
             'train', step_num=int(self.n_updates)):
-          self.params, carry, outs, mets = self._train(
+          self.params, carry, outs, mets = train_fn(
               dona, allo, seed, carry, data)
     self.n_updates.increment()
 

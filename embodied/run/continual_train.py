@@ -88,6 +88,136 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         replay.update(outs['replay'])
       train_agg.add(mets, prefix='train')
 
+  def add_train_metrics(mets, outs=None):
+    train_fps.step(batch_steps)
+    if outs and 'replay' in outs:
+      replay.update(outs['replay'])
+    train_agg.add(mets, prefix='train')
+
+  def write_logs():
+    train_metrics = train_agg.result()
+    train_metrics_new = {}
+    loss_metrics = {}
+    opt_metrics = {}
+    act_redo_metrics = {}
+    grad_redo_metrics = {}
+    data_diversity_metrics = {}
+    for k, v in train_metrics.items():
+      if "train/loss/" in k and "opt" not in k:
+        loss_metrics[k.replace('train/loss/', '')] = v
+      elif "train/opt/" in k and "grad_redo" not in k:
+        opt_metrics[k.replace('train/opt/', '')] = v
+      elif "train/act_redo/" in k:
+        if not np.isnan(float(v)):
+          act_redo_metrics[k.replace('train/act_redo/', '')] = v
+      elif "train/opt/grad_redo/" in k:
+        if not np.isnan(float(v)):
+          grad_redo_metrics[k.replace('train/opt/grad_redo/', '')] = v
+      elif "train/data_diversity/" in k:
+        if not np.isnan(float(v)):
+          data_diversity_metrics[k.replace('train/data_diversity/', '')] = v
+      else:
+        train_metrics_new[k.replace('train/', '')] = v
+    logger.add(train_metrics_new, prefix='train')
+    logger.add(loss_metrics, prefix='loss')
+    logger.add(opt_metrics, prefix='opt')
+    logger.add(act_redo_metrics, prefix='act_redo')
+    logger.add(grad_redo_metrics, prefix='grad_redo')
+    logger.add(data_diversity_metrics, prefix='data_diversity')
+    for key, agg in performance_agg.items():
+      logger.add(agg.result(), prefix=f'performance/{key}')
+    logger.add(epstats.result(), prefix='epstats')
+    logger.add(replay.stats(), prefix='replay')
+    logger.add(usage.stats(), prefix='usage')
+    logger.add({'fps/policy': policy_fps.result()})
+    logger.add({'fps/train': train_fps.result()})
+    logger.add({'timer': elements.timer.stats()['summary']})
+    logger.write()
+
+  def random_policy(carry, obs, mode='train'):
+    del mode
+    rng = random_policy.rng
+    act = {}
+    batch = len(obs['is_first'])
+    for key, space in driver.act_space.items():
+      if key == 'reset':
+        continue
+      low, high = space.low, space.high
+      if np.issubdtype(space.dtype, np.floating):
+        low = np.maximum(np.ones(space.shape) * np.finfo(space.dtype).min, low)
+        high = np.minimum(np.ones(space.shape) * np.finfo(space.dtype).max, high)
+      if space.discrete:
+        if space.dtype == bool:
+          values = rng.integers(0, 2, (batch, *space.shape))
+        else:
+          values = rng.integers(low, high, (batch, *space.shape))
+        act[key] = values.astype(space.dtype)
+      else:
+        act[key] = rng.uniform(low, high, (batch, *space.shape)).astype(space.dtype)
+    return carry, act, {}
+  random_policy.rng = np.random.default_rng(getattr(args, 'seed', 0))
+
+  def run_prim_phase():
+    prim_mode = getattr(args, 'prim_mode', 'none')
+    prim_mode = str(prim_mode or 'none')
+    if prim_mode in ('none', 'false', 'False', '0'):
+      return
+    modes = (
+        'only_wm', 'only_agent_multi_rollout',
+        'only_agent_one_rollou', 'only_agent_one_rollout', 'both')
+    if prim_mode not in modes:
+      raise NotImplementedError(f'Unknown prim_mode: {prim_mode}')
+
+    collect_steps = int(getattr(args, 'prim_collect_steps', 128))
+    train_steps = int(getattr(args, 'prim_train_steps', 100000))
+    print(
+        f'Start prim phase: mode={prim_mode}, '
+        f'collect_steps={collect_steps}, train_steps={train_steps}')
+    if collect_steps > 0:
+      use_random = getattr(args, 'prim_random_collect', False)
+      if use_random and args.replay_context:
+        print('Prim random collection disabled because replay_context is on.')
+        use_random = False
+      collect_policy = random_policy if use_random else policy
+      driver(collect_policy, steps=collect_steps * args.envs)
+    if len(replay) < args.batch_size * args.batch_length:
+      raise RuntimeError(
+          'Prim collection did not produce enough replay data: '
+          f'{len(replay)} < {args.batch_size * args.batch_length}')
+
+    cached_rollout = None
+    if prim_mode in ('only_agent_multi_rollout', 'only_agent_one_rollou',
+                     'only_agent_one_rollout'):
+      batch = next(stream_train)
+      carry_train[0], outs, mets = agent.train_wm(carry_train[0], batch)
+      add_train_metrics(mets, outs)
+      step.increment()
+      if should_log(step):
+        write_logs()
+      if prim_mode in ('only_agent_one_rollou', 'only_agent_one_rollout'):
+        cached_rollout = agent.prim_rollout(carry_train[0], next(stream_train))
+
+    for prim_step in range(train_steps):
+      if prim_mode == 'only_wm':
+        carry_train[0], outs, mets = agent.train_wm(
+            carry_train[0], next(stream_train))
+      elif prim_mode == 'only_agent_multi_rollout':
+        carry_train[0], outs, mets = agent.train_agent(
+            carry_train[0], next(stream_train))
+      elif prim_mode in ('only_agent_one_rollou', 'only_agent_one_rollout'):
+        carry_train[0], outs, mets = agent.train_agent_rollout(
+            carry_train[0], cached_rollout)
+      elif prim_mode == 'both':
+        carry_train[0], outs, mets = agent.train(
+            carry_train[0], next(stream_train))
+      add_train_metrics(mets, outs)
+      step.increment()
+      if should_log(step):
+        write_logs()
+      if (prim_step + 1) % 10000 == 0:
+        print(f'Prim phase progress: {prim_step + 1}/{train_steps}')
+    print(f'Finished prim phase at step {step.value}.')
+
   cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
   cp.agent = agent
@@ -109,8 +239,10 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   driver.on_step(lambda tran, _: policy_fps.step())
   driver.on_step(replay.add)
   driver.on_step(logfn)
-  driver.on_step(trainfn)
   driver.reset(agent.init_policy)
+
+  run_prim_phase()
+  driver.on_step(trainfn)
   
   while step < args.steps:
     if should_switch(step):
@@ -144,44 +276,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(agg.result(), prefix='report')
 
     if should_log(step):
-      train_metrics = train_agg.result()
-      train_metrics_new = {}
-      loss_metrics = {}
-      opt_metrics = {}
-      act_redo_metrics = {}
-      grad_redo_metrics = {}
-      data_diversity_metrics = {}
-      for k, v in train_metrics.items():
-        if "train/loss/" in k and "opt" not in k:
-          loss_metrics[k.replace('train/loss/', '')] = v
-        elif "train/opt/" in k and "grad_redo" not in k:
-          opt_metrics[k.replace('train/opt/', '')] = v
-        elif "train/act_redo/" in k:
-          if not np.isnan(float(v)):
-            act_redo_metrics[k.replace('train/act_redo/', '')] = v
-        elif "train/opt/grad_redo/" in k:
-          if not np.isnan(float(v)):
-            grad_redo_metrics[k.replace('train/opt/grad_redo/', '')] = v
-        elif "train/data_diversity/" in k:
-          if not np.isnan(float(v)):
-            data_diversity_metrics[k.replace('train/data_diversity/', '')] = v
-        else:
-          train_metrics_new[k.replace('train/', '')] = v
-      logger.add(train_metrics_new, prefix='train')
-      logger.add(loss_metrics, prefix='loss')
-      logger.add(opt_metrics, prefix='opt')
-      logger.add(act_redo_metrics, prefix='act_redo')
-      logger.add(grad_redo_metrics, prefix='grad_redo')
-      logger.add(data_diversity_metrics, prefix='data_diversity')
-      for key, agg in performance_agg.items():
-        logger.add(agg.result(), prefix=f'performance/{key}')
-      logger.add(epstats.result(), prefix='epstats')
-      logger.add(replay.stats(), prefix='replay')
-      logger.add(usage.stats(), prefix='usage')
-      logger.add({'fps/policy': policy_fps.result()})
-      logger.add({'fps/train': train_fps.result()})
-      logger.add({'timer': elements.timer.stats()['summary']})
-      logger.write()
+      write_logs()
 
     if should_save(step):
       cp.save()

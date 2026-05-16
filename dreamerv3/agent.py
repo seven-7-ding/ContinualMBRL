@@ -168,53 +168,59 @@ class Agent(embodied.jax.Agent):
     return carry, act, out
 
   def train(self, carry, data):
-    carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
+    return self._train_with_loss(carry, data, self.loss)
 
+  def train_wm(self, carry, data):
+    return self._train_with_loss(carry, data, self.loss_wm)
+
+  def train_agent(self, carry, data):
+    return self._train_with_loss(carry, data, self.loss_agent)
+
+  def train_agent_rollout(self, carry, data):
+    metrics, (carry, outs, mets) = self.opt(
+        self.loss_agent_rollout, carry, data, training=True, has_aux=True,
+        gradient_redo=self.grad_redo)
+    if self.data_diversity_enabled:
+      should_analyze_data = self._should_analyze_data_diversity(training=True)
+      mets.update(self._imag_data_diversity(
+          jax.tree.map(lambda x: x[:, :-1], data['imgfeat']),
+          jax.tree.map(lambda x: x[:, :-1], data['imgact']),
+          should_analyze_data))
+    if self.act_redo is not None:
+      mets.update(self._act_redo_metrics(None, data['imgfeat']))
+    metrics.update(mets)
+    self.slowval.update()
+    return carry, outs, metrics
+
+  def prim_rollout(self, carry, data):
+    carry, obs, prevact, _ = self._apply_replay_context(carry, data)
+    return self._rollout_from_replay(carry, obs, prevact)
+
+  def _train_with_loss(self, carry, data, lossfn):
+    carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
     metrics, (carry, entries, outs, mets) = self.opt(
-        self.loss, carry, obs, prevact, training=True, has_aux=True,
+        lossfn, carry, obs, prevact, training=True, has_aux=True,
         gradient_redo=self.grad_redo)
 
     should_analyze_data = self._should_analyze_data_diversity(training=True)
     if self.data_diversity_enabled:
       data_action = self._next_actions(prevact)
-      mets.update(self._real_data_diversity(
-          obs, outs['repfeat'], data_action, should_analyze_data))
-      mets.update(self._imag_data_diversity(
-          jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
-          jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
-          should_analyze_data))
+      if 'repfeat' in outs:
+        mets.update(self._real_data_diversity(
+            obs, outs['repfeat'], data_action, should_analyze_data))
+      if 'imgfeat' in outs and 'imgact' in outs:
+        mets.update(self._imag_data_diversity(
+            jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
+            jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
+            should_analyze_data))
 
     # Activation-based ReDo: forward-only pass AFTER opt() using the repfeat
     # already computed by the training step.  Being outside nj.grad means
     # tensors are plain JIT-tracers (no JVP/VJP) – safe to store in a Python
     # dict and no backward-pass memory overhead.
     if self.act_redo is not None:
-      _acts = {}
-      _old_cb = nn.LAYER_CALLBACK
-      nn.LAYER_CALLBACK = lambda t, name: (
-        _acts.__setitem__(name, t) or _old_cb(t, name)
-        if nn._SCAN_DEPTH[0] == 0 else _old_cb(t, name))
-      # nn.LAYER_CALLBACK = lambda t, name: _acts.__setitem__(name, t) or _old_cb(t, name)
-      _repfeat = sg(outs['repfeat'])
-      # enc: no internal scan → mlp{i}/cnn{i} activations captured.
-      # _ = self.enc({}, obs, obs['is_first'], training=False)
-      # dyn: _core/_observe run inside nj.scan; their activations are
-      # suppressed by the _SCAN_DEPTH guard and cannot be captured via
-      # side-effects.  _prior (prior projection layers) is scan-free and
-      # can be called directly on the already-computed deter sequence.
-      # _ = self.dyn._prior(nn.cast(_repfeat['deter']))
-      # dec: no internal scan → sp1/conv{i} activations captured.
-      # _ = self.dec({}, _repfeat, obs['is_first'], training=False)
-      # rew/con: use repfeat (same distribution as training).
-      # pol/val: use imgfeat (same distribution as imag_loss training).
-      _repf = self.feat2tensor(_repfeat)
-      _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
-      _ = self.rew(_repf, 2)
-      _ = self.con(_repf, 2)
-      _ = self.pol(_imgf, 2)
-      _ = self.val(_imgf, 2)
-      nn.LAYER_CALLBACK = _old_cb
-      mets.update(self.act_redo.step(_acts))
+      mets.update(self._act_redo_metrics(
+          outs.get('repfeat'), outs.get('imgfeat', outs.get('repfeat'))))
 
     metrics.update(mets)
     self.slowval.update()
@@ -323,7 +329,150 @@ class Agent(embodied.jax.Agent):
     if training:
       outs['imgfeat'] = imgfeat
       outs['imgact'] = imgact
+      outs['imgrew'] = self.rew(inp, 2).pred()
+      outs['imgcon'] = self.con(inp, 2).prob(1)
     return loss, (carry, entries, outs, metrics)
+
+  def loss_wm(self, carry, obs, prevact, training):
+    enc_carry, dyn_carry, dec_carry = carry
+    reset = obs['is_first']
+    B, T = reset.shape
+    losses = {}
+    metrics = {}
+
+    enc_carry, enc_entries, tokens = self.enc(
+        enc_carry, obs, reset, training)
+    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
+        dyn_carry, tokens, prevact, reset, training)
+    losses.update(los)
+    metrics.update(mets)
+    dec_carry, dec_entries, recons = self.dec(
+        dec_carry, repfeat, reset, training)
+    inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
+    losses['reward'] = self.rew(inp, 2).loss(obs['reward'])
+    con = f32(~obs['is_terminal'])
+    if self.config.contdisc:
+      con *= 1 - 1 / self.config.horizon
+    losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+    for key, recon in recons.items():
+      space, value = self.obs_space[key], obs[key]
+      target = f32(value) / 255 if isimage(space) else value
+      losses[key] = recon.loss(sg(target))
+
+    shapes = {k: v.shape for k, v in losses.items()}
+    assert all(x == (B, T) for x in shapes.values()), ((B, T), shapes)
+    metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
+    loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
+    loss += self._zero_touch_modules()
+    carry = (enc_carry, dyn_carry, dec_carry)
+    entries = (enc_entries, dyn_entries, dec_entries)
+    outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
+    return loss, (carry, entries, outs, metrics)
+
+  def loss_agent(self, carry, obs, prevact, training):
+    metrics = {}
+    rollout, new_carry, entries, tokens, repfeat, mets = (
+        self._rollout_from_replay(
+            carry, obs, prevact, return_context=True, training=training))
+    metrics.update(mets)
+
+    inp = self.feat2tensor(sg(rollout['imgfeat']))
+    losses, _, imets = imag_loss(
+        rollout['imgact'],
+        rollout['rew'],
+        rollout['con'],
+        self.pol(inp, 2),
+        self.val(inp, 2),
+        self.slowval(inp, 2),
+        self.retnorm, self.valnorm, self.advnorm,
+        update=training,
+        contdisc=self.config.contdisc,
+        horizon=self.config.horizon,
+        **self.config.imag_loss)
+    metrics.update(imets)
+    metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
+    loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
+    loss += self._zero_touch_modules()
+    outs = {
+        'tokens': tokens, 'repfeat': repfeat, 'imgfeat': rollout['imgfeat'],
+        'imgact': rollout['imgact'], 'losses': losses}
+    return loss, (new_carry, entries, outs, metrics)
+
+  def _rollout_from_replay(
+      self, carry, obs, prevact, return_context=False, training=False):
+    enc_carry, dyn_carry, dec_carry = carry
+    reset = obs['is_first']
+    B, T = reset.shape
+    enc_carry, enc_entries, tokens = self.enc(
+        enc_carry, obs, reset, training=False)
+    dyn_carry, dyn_entries, _, repfeat, mets = self.dyn.loss(
+        dyn_carry, tokens, prevact, reset, training=False)
+
+    K = min(self.config.imag_last or T, T)
+    H = self.config.imag_length
+    starts = jax.tree.map(sg, self.dyn.starts(dyn_entries, dyn_carry, K))
+    policyfn = lambda feat: sample(self.pol(self.feat2tensor(sg(feat)), 1))
+    _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
+    first = jax.tree.map(
+        lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), sg(repfeat))
+    imgfeat = concat([first, sg(imgfeat)], 1)
+    lastact = policyfn(jax.tree.map(lambda x: x[:, -1], imgfeat))
+    lastact = jax.tree.map(lambda x: x[:, None], lastact)
+    imgact = concat([imgprevact, lastact], 1)
+    inp = self.feat2tensor(sg(imgfeat))
+    rollout = {
+        'imgfeat': jax.tree.map(sg, imgfeat),
+        'imgact': jax.tree.map(sg, imgact),
+        'rew': sg(self.rew(inp, 2).pred()),
+        'con': sg(self.con(inp, 2).prob(1)),
+    }
+    if not return_context:
+      return rollout
+    new_carry = (enc_carry, dyn_carry, dec_carry)
+    entries = (enc_entries, dyn_entries, {})
+    return rollout, new_carry, entries, tokens, repfeat, mets
+
+  def loss_agent_rollout(self, carry, data, training):
+    inp = self.feat2tensor(sg(data['imgfeat']))
+    losses, _, metrics = imag_loss(
+        data['imgact'],
+        sg(data['rew']),
+        sg(data['con']),
+        self.pol(inp, 2),
+        self.val(inp, 2),
+        self.slowval(inp, 2),
+        self.retnorm, self.valnorm, self.advnorm,
+        update=training,
+        contdisc=self.config.contdisc,
+        horizon=self.config.horizon,
+        **self.config.imag_loss)
+    metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
+    loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
+    loss += self._zero_touch_modules()
+    return loss, (carry, {}, metrics)
+
+  def _zero_touch_modules(self):
+    zero = f32(0)
+    for module in self.modules:
+      zero += sum([x.sum() * f32(0) for x in jax.tree.leaves(module.values)])
+    return zero
+
+  def _act_redo_metrics(self, repfeat, imgfeat):
+    _acts = {}
+    _old_cb = nn.LAYER_CALLBACK
+    nn.LAYER_CALLBACK = lambda t, name: (
+      _acts.__setitem__(name, t) or _old_cb(t, name)
+      if nn._SCAN_DEPTH[0] == 0 else _old_cb(t, name))
+    repfeat = sg(repfeat if repfeat is not None else imgfeat)
+    imgfeat = sg(imgfeat if imgfeat is not None else repfeat)
+    repf = self.feat2tensor(repfeat)
+    imgf = self.feat2tensor(imgfeat)
+    _ = self.rew(repf, 2)
+    _ = self.con(repf, 2)
+    _ = self.pol(imgf, 2)
+    _ = self.val(imgf, 2)
+    nn.LAYER_CALLBACK = _old_cb
+    return self.act_redo.step(_acts)
 
   def _next_actions(self, prevact):
     return jax.tree.map(

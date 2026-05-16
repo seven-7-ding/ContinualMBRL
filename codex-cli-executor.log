@@ -1,0 +1,5 @@
+[2026-05-16 15:54:46 +0800] Task: add primacy-bias prim modes to continual Dreamer training, create CUDA 6/7 sweep script, preserve existing processes.
+[2026-05-16 15:54:46 +0800] Inspected continual_train.py, Dreamer agent/JAX wrapper, configs.yaml, current auto scripts, and full-loop baseline script. Worktree was initially clean; no AGENTS.md found in repository.
+[2026-05-16 16:03:00 +0800] Implemented prim collect/overfit phase, new Dreamer/JAX train entrypoints for wm-only and agent-only modes, config flags, and CUDA 6/7 primacy-bias sweep script.
+[2026-05-16 16:03:00 +0800] Validation: py_compile passed for modified Python files; bash -n passed for new sweep script. CPU debug smoke tests passed for only_agent_one_rollou and only_agent_multi_rollout with tiny prim settings. Temporary smoke logdirs and __pycache__ directories removed.
+[2026-05-16 16:25:00 +0800] Updated primacy-bias script spelling from only_agent_one_rollou to only_agent_one_rollout while preserving the current commented/enabled seed selection.
