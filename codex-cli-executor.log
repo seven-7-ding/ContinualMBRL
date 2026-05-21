@@ -18,3 +18,5 @@
 [2026-05-16 14:24:42 HKT] Completed seed reproducibility audit/fix.
 [2026-05-16 15:29:40 HKT] Follow-up task: average per-task performance episode returns before logging.
 [2026-05-16 15:30:07 HKT] Changed continual_train performance logging to average episode score/length per task per log interval.
+[2026-05-16 21:09:51 HKT] Follow-up task: make skip_last_layer skip all output/head layers for ReDo reset.
+[2026-05-16 21:10:41 HKT] Implemented skip_last_layer output-projection filtering for activation and gradient ReDo.

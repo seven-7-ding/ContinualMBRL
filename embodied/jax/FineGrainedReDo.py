@@ -19,6 +19,9 @@ import ninjax as nj
 f32 = jnp.float32
 # Fixed tau list for multi-threshold dormancy logging
 _TAU_LIST = (0.05, 0.1, 0.2, 0.4)
+_OUTPUT_LAYER_NAMES = frozenset((
+    'logit', 'logits', 'obslogit', 'priorlogit',
+    'mean', 'stddev', 'pred', 'imgout'))
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +75,11 @@ def _stable_rank(sv: jnp.ndarray, threshold: float = 0.99) -> jnp.ndarray:
     norm_sv = jnp.abs(sv) / (jnp.sum(jnp.abs(sv)) + 1e-8)
     cumsum = jnp.cumsum(norm_sv)          # descending sv → ascending cumsum
     return f32(jnp.sum(cumsum < threshold) + 1)
+
+
+def _is_output_layer(path: str) -> bool:
+    """Whether a module path names a prediction/output projection layer."""
+    return path.split('/')[-1] in _OUTPUT_LAYER_NAMES
 
 
 def matrix_diversity_stats(x: jnp.ndarray, threshold: float = 0.99) -> Dict[str, jnp.ndarray]:
@@ -142,10 +150,12 @@ class FGReDo(nj.Module):
         ctx = nj.context()
         metrics = {}
 
-        # Mirror PyTorch: skip the last linear/conv layer in execution order.
+        # Mirror PyTorch by skipping output projections when requested. In this
+        # codebase, output layers are named by their predicted quantity rather
+        # than merely being the last executed layer.
         paths = list(activations.keys())
-        if self.skip_last_layer and len(paths) > 1:
-            paths = paths[:-1]
+        if self.skip_last_layer:
+            paths = [p for p in paths if not _is_output_layer(p)]
 
         need_erank = 'erank' in self.log_item
         need_srank = 'srank' in self.log_item
@@ -226,6 +236,7 @@ class FGGradientReDo(nj.Module):
     log_item: str = 'disabled'
     reset_start: int = 0
     reset_end: int = 0   # 0 = no upper limit
+    skip_last_layer: bool = False
 
     def __init__(self):
         self._step = nj.Variable(jnp.zeros, (), jnp.int32, name='step')
@@ -252,6 +263,9 @@ class FGGradientReDo(nj.Module):
         for key, grad in grads.items():
             if not key.endswith('/kernel') or key not in params:
                 continue
+            path = key[:-len('/kernel')]
+            if self.skip_last_layer and _is_output_layer(path):
+                continue
 
             kernel = params[key]
             if grad.ndim == 2:        # Linear  [in, out]
@@ -262,7 +276,7 @@ class FGGradientReDo(nj.Module):
                 continue
 
             norm_score = score / (score.mean() + 1e-9)
-            lname = key[:-len('/kernel')].replace('/', '_')
+            lname = path.replace('/', '_')
             # Gate ALL grad dormancy metrics: NaN when not at a frequency step.
             for t in _TAU_LIST:
                 metrics[f'{self.name}/GradDormant_{t}/{lname}'] = jnp.where(

@@ -105,6 +105,7 @@ class Agent(embodied.jax.Agent):
           tau=redo_cfg.tau, mode=redo_cfg.mode,
           frequency=redo_cfg.frequency, log_item=grad_log_item,
           reset_start=redo_cfg.reset_start, reset_end=redo_cfg.reset_end,
+          skip_last_layer=redo_cfg.skip_last_layer,
           name='grad_redo')
     else:
       self.grad_redo = None

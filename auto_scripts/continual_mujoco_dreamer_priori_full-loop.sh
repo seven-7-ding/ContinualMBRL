@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-full-loop
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(0 1 2 3 4 5 0 1 2 3 4 5)
+CUDA_DEVICES=(4)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -16,7 +16,7 @@ TASK_STRING="finger_spin|walker_walk|cheetah_run|reacher_easy"
 PREFIX="continual_dreamer_full_loop"
 
 # Model configuration
-MODEL_SIZE="size1m"  # Options: size0.5m, size1m, size12m, size50m, etc.
+MODEL_SIZE="size0.5m"  # Options: size0.5m, size1m, size12m, size50m, etc.
 
 # Base log directory
 BASE_LOGDIR_ROOT="logdir"
@@ -28,21 +28,21 @@ TASK_INTERVAL=200000  # Match VDRL task_steps=200000
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 declare -a SETTINGS=(
-    "noreset_no_actredo_no_gradredo|1000"
-    "noreset_no_actredo_no_gradredo|2000"
-    "noreset_no_actredo_no_gradredo|3000"
+    # "noreset_no_actredo_no_gradredo|1000"
+    # "noreset_no_actredo_no_gradredo|2000"
+    # "noreset_no_actredo_no_gradredo|3000"
 
-    "reset_all_no_actredo_no_gradredo|1000"
-    "reset_all_no_actredo_no_gradredo|2000"
-    "reset_all_no_actredo_no_gradredo|3000"
+    # "reset_all_no_actredo_no_gradredo|1000"
+    # "reset_all_no_actredo_no_gradredo|2000"
+    # "reset_all_no_actredo_no_gradredo|3000"
 
-    "noreset_actredo_no_gradredo|1000"
-    "noreset_actredo_no_gradredo|2000"
-    "noreset_actredo_no_gradredo|3000"
+    # "noreset_actredo_no_gradredo|1000"
+    # "noreset_actredo_no_gradredo|2000"
+    # "noreset_actredo_no_gradredo|3000"
 
-    "noreset_no_actredo_gradredo|1000"
+    # "noreset_no_actredo_gradredo|1000"
     "noreset_no_actredo_gradredo|2000"
-    "noreset_no_actredo_gradredo|3000"
+    # "noreset_no_actredo_gradredo|3000"
 )
 
 # ============= Initialize =============
@@ -126,7 +126,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     pid=$!
 
     run_counter=$((run_counter + 1))
-    sleep 10
+    sleep 100
     echo ""
 done
 

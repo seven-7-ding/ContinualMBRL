@@ -143,7 +143,7 @@ defaults:
       # 'percentage': dormant if in the lowest tau-fraction of neurons
       mode: threshold
       # Steps between successive analysis+reset passes.
-      frequency: 10000
+      frequency: 1000
       # What to do each pass (substring-matched, can be combined with '+'):
       #   'disabled' – skip all work (fastest; step counter still ticks)
       #   'log'      – compute dormancy metrics only, no weight reset
@@ -155,7 +155,7 @@ defaults:
       # Optional per-analyser overrides. Defaults to log_item when omitted.
       act_log_item: log+erank+srank
       grad_log_item: log+erank+srank
-      # Skip the last executed linear/conv layer (matches PyTorch version behaviour).
+      # Skip output projection layers such as logits/logit/mean/stddev/pred/imgout.
       skip_last_layer: True
       # Cumulative singular-value fraction used by srank.
       rank_threshold: 0.99
@@ -164,7 +164,7 @@ defaults:
       reset_end: 0
 
 size0.5m: &size0_5m
-  .*\.rssm: {deter: 256, hidden: 32, classes: 2}
+  .*\.rssm: {deter: 64, hidden: 32, classes: 2}
   .*\.depth: 2
   .*\.units: 32
 
