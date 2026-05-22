@@ -20,3 +20,5 @@
 [2026-05-16 15:30:07 HKT] Changed continual_train performance logging to average episode score/length per task per log interval.
 [2026-05-16 21:09:51 HKT] Follow-up task: make skip_last_layer skip all output/head layers for ReDo reset.
 [2026-05-16 21:10:41 HKT] Implemented skip_last_layer output-projection filtering for activation and gradient ReDo.
+[2026-05-21 22:46:23 HKT] Task: adjust same-task full-loop script obs_dim/act_dim for quadruped.
+[2026-05-21 22:46:51 HKT] Updated same-task quadruped script obs/action dims and validated shell syntax.
