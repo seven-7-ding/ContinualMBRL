@@ -1,0 +1,11 @@
+修改脚本/home/jiale/MBRL/ContinualMBRL-reset-agent/auto_scripts/continual_mujoco_dreamer_priori_reset-agent.sh及其启动的相关代码：
+【1】修改对应于reset_*的方法如下：
+    1. no_reset，启动一般的dreamer训练代码即可，没有reset步骤
+    2. reset_only_agent，那么在100000步后（这一个frequency参数让我可以自己调整）重置agent（而不是在task switch的时候才reset了），并在重置后，多次使用现有未经reset的world model进行agent训练（具体的训练过程和原先一样，但是不更新worldmodel，仅训练agent；训练的轮次revive_epoch让我自己定，默认100）
+    3. reset_only_wm，那么在100000步后（这一个frequency参数让我可以自己调整，同上）重置world model（而不是在task switch的时候才reset了），并在重置后，多次使用现有的replay buffer进行wm训练（具体过程和之前一样，但是只训练world model，不更新agent；训练轮次同上）
+    4. reset_all，那么在100000步后（这一个frequency参数让我可以自己调整，同上）重置world model 和 agent（而不是在task switch的时候才reset了），并在重置后，先多次使用现有的replay buffer进行wm训练，再进行agent训练。
+【2】如上所述，应该用到的超参数有reset_frequency（不要和redo/gradient_redo的frequency搞混）、revive_epoch、reset_mode等。
+【3】你可以去除“在task switch的时刻进行reset”的代码了。清理这一部分的相关代码，保持代码一致和整洁。
+【4】对于redo/gradient_redo/data_diversity等的分析不要动。
+【5】sh脚本的格式本身也不要动，遵照原样；内容进行修改以实现新功能
+【6】你只能在cuda6/7上进行调试和debug，已有进程不允许进行修改。
