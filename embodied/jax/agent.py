@@ -261,10 +261,21 @@ class Agent(embodied.Agent):
     return carry, acts, outs
 
   @elements.timer.section('jaxagent_train')
-  def train(self, carry, data):
+  def train(self, carry, data, train_mode='all'):
+    train_mode = self._canonical_train_mode(train_mode)
     seed = data.pop('seed')
     assert sorted(data.keys()) == sorted(self.spaces.keys()), (
         sorted(data.keys()), sorted(self.spaces.keys()))
+    freeze_mode = None
+    if train_mode == 'wm':
+      freeze_mode = 'agent'
+    elif train_mode == 'agent':
+      freeze_mode = 'wm'
+    frozen_params = {}
+    if freeze_mode:
+      freeze_keys = [
+          k for k in self.params if self._reset_key_matches(k, freeze_mode)]
+      frozen_params = {k: self.params[k] for k in freeze_keys}
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
     with self.train_lock:
@@ -273,15 +284,19 @@ class Agent(embodied.Agent):
             'train', step_num=int(self.n_updates)):
           self.params, carry, outs, mets = self._train(
               dona, allo, seed, carry, data)
+      if frozen_params:
+        replaced = {k: self.params[k] for k in frozen_params}
+        self.params.update(frozen_params)
+        jax.tree.map(lambda x: x.delete(), replaced)
     self.n_updates.increment()
 
     if self.jaxcfg.enable_policy:
-      if not self.pending_sync:
-        self.pending_sync = internal.move(
-            {k: allo[k] for k in self.policy_keys},
-            self.policy_params_sharding)
-      else:
-        jax.tree.map(lambda x: x.delete(), allo)
+      pending = internal.move(
+          {k: self.params[k] for k in self.policy_keys},
+          self.policy_params_sharding)
+      if self.pending_sync:
+        jax.tree.map(lambda x: x.delete(), self.pending_sync)
+      self.pending_sync = pending
 
     return_outs = {}
     if self.pending_outs:
@@ -399,10 +414,12 @@ class Agent(embodied.Agent):
   def reset_params(self, mode='all'):
     """Reinitialise selected network parameters from scratch.
 
-    Called on task switch for continual runs. ``mode='all'`` preserves the
-    legacy full reset behavior. ``mode='wm'`` resets the Dreamer world model
-    (encoder, dynamics, decoder, reward, continuation) and ``mode='agent'``
-    resets the behavior/value side while keeping the world model intact.
+    Called by continual runs when a reset is triggered. ``mode='all'``
+    preserves the legacy full reset behavior. ``mode='wm'`` resets the
+    Dreamer world model (encoder, dynamics, decoder, reward, continuation)
+    and ``mode='agent'`` resets the behavior/value side while keeping the
+    world model intact.
+    For partial resets, optimiser states are also reset.
     """
     aliases = {
         True: 'all',
@@ -452,7 +469,8 @@ class Agent(embodied.Agent):
       else:
         reset_keys = [
             k for k in self.params
-            if self._reset_key_matches(k, mode) and k in new_params]
+            if (self._reset_key_matches(k, mode) or k.startswith('opt/'))
+            and k in new_params]
         if not reset_keys:
           raise ValueError(f'No parameters matched reset mode: {mode}')
         old_params = {k: self.params[k] for k in reset_keys}
@@ -470,6 +488,26 @@ class Agent(embodied.Agent):
         if self.pending_sync:
           jax.tree.map(lambda x: x.delete(), self.pending_sync)
           self.pending_sync = None
+
+  def _canonical_train_mode(self, mode):
+    aliases = {
+        None: 'all',
+        False: 'all',
+        'false': 'all',
+        'none': 'all',
+        'all': 'all',
+        'no_reset': 'all',
+        'wm': 'wm',
+        'world_model': 'wm',
+        'worldmodel': 'wm',
+        'reset_only_wm': 'wm',
+        'agent': 'agent',
+        'reset_only_agent': 'agent',
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ('all', 'wm', 'agent'):
+      raise ValueError(f'Unknown train mode: {mode}')
+    return mode
 
   def _reset_key_matches(self, key, mode):
     wm_modules = ('enc', 'dyn', 'dec', 'rew', 'con')

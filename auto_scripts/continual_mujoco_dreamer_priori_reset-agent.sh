@@ -1,19 +1,19 @@
 #!/bin/bash
 
 # ============= Configuration =============
-cd /home/jiale/MBRL/ContinualMBRL-full-loop
+cd /home/jiale/MBRL/ContinualMBRL-reset-agent
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(0 1 2 3 4 5)
+CUDA_DEVICES=(6 7 0 1 2 3 4 5 6 7 6 7)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
 
 # Task string (same for all settings)
-TASK_STRING="finger_spin|walker_walk|cheetah_run|reacher_easy"
+TASK_STRING="walker_run|hopper_hop|fish_swim"
 
 # Prefix for log directories
-PREFIX="continual_dreamer_full_loop"
+PREFIX="continual_dreamer_reset_agent"
 
 # Model configuration
 MODEL_SIZE="size1m"  # Options: size0.5m, size1m, size12m, size50m, etc.
@@ -24,6 +24,8 @@ BASE_LOGDIR_ROOT="logdir"
 # Training configuration
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000  # Match VDRL task_steps=200000
+RESET_FREQUENCY=100000
+REVIVE_EPOCH=100
 
 # ============= Settings Definition =============
 # Format: "task_type|seed"
@@ -78,12 +80,14 @@ for setting_spec in "${SETTINGS[@]}"; do
     # Assign GPU by sequential index (no waiting).
     device_num="${CUDA_DEVICES[$run_counter % ${#CUDA_DEVICES[@]}]}"
 
-    # Task-switch reset configuration.
-    reset_flag="False"
-    reset_mode="none"
-    if [[ "$task_type" == "reset_all_"* ]]; then
-        reset_flag="True"
-        reset_mode="all"
+    # Periodic reset configuration.
+    reset_mode="no_reset"
+    if [[ "$task_type" == "reset_only_agent" ]]; then
+        reset_mode="reset_only_agent"
+    elif [[ "$task_type" == "reset_only_wm" ]]; then
+        reset_mode="reset_only_wm"
+    elif [[ "$task_type" == "reset_all" ]]; then
+        reset_mode="reset_all"
     fi
 
     # ReDo analysis is always enabled. The per-analyser log item controls
@@ -105,8 +109,9 @@ for setting_spec in "${SETTINGS[@]}"; do
         --logdir "$logdir"
         --run.train_ratio "$TRAIN_RATIO"
         --run.task_interval "$TASK_INTERVAL"
-        --run.reset_on_switch "$reset_flag"
         --run.reset_mode "$reset_mode"
+        --run.reset_frequency "$RESET_FREQUENCY"
+        --run.revive_epoch "$REVIVE_EPOCH"
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length 15
@@ -119,7 +124,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     # Execute
     echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $task_type seed $seed -> GPU $device_num"
     echo "   Task order: $TASK_STRING"
-    echo "   Config: continual_dmc_priori $MODEL_SIZE  reset_on_switch=$reset_flag reset_mode=$reset_mode"
+    echo "   Config: continual_dmc_priori $MODEL_SIZE  reset_mode=$reset_mode reset_frequency=$RESET_FREQUENCY revive_epoch=$REVIVE_EPOCH"
     echo "   ReDo: act_log_item=$act_log_item grad_log_item=$grad_log_item"
     echo "   Logdir: $logdir"
     PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=$device_num "${cmd_args[@]}" > "$logdir/train.log" 2>&1 &

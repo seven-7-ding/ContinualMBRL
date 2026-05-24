@@ -1,0 +1,5 @@
+[2026-05-24 14:23:26 +0800] Task: update periodic reset/revive flow for continual dreamer; remove task-switch reset; keep redo analysis unchanged.
+[2026-05-24 14:23:26 +0800] Actions: edited embodied/run/continual_train.py, embodied/jax/agent.py, dreamerv3/configs.yaml, auto_scripts/continual_mujoco_dreamer_priori_reset-agent.sh.
+[2026-05-24 14:23:26 +0800] Validation: rg reset_on_switch (no matches in target dirs); CUDA_VISIBLE_DEVICES=6,7 python -m py_compile on modified python files (pass).
+[2026-05-24 14:23:26 +0800] Note: partial reset now also resets optimizer state (opt/*) per user request.
+[2026-05-24 14:24:17 +0800] Follow-up: updated reset_params docstring wording; re-ran CUDA_VISIBLE_DEVICES=6,7 py_compile (pass).

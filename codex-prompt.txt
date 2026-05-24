@@ -9,3 +9,5 @@
 【4】对于redo/gradient_redo/data_diversity等的分析不要动。
 【5】sh脚本的格式本身也不要动，遵照原样；内容进行修改以实现新功能
 【6】你只能在cuda6/7上进行调试和debug，已有进程不允许进行修改。
+
+codex resume 019e5895-39af-78a3-a4d9-21409c8dc461

@@ -37,6 +37,39 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   should_save = embodied.LocalClock(args.save_every)
   # TODO: enable env switching.
   should_switch = elements.when.Every(args.task_interval, initial=True)
+  reset_frequency = int(getattr(args, 'reset_frequency', 0) or 0)
+  revive_epoch = int(getattr(args, 'revive_epoch', 100) or 0)
+
+  def canonical_reset_mode(mode):
+    aliases = {
+        None: 'no_reset',
+        False: 'no_reset',
+        'false': 'no_reset',
+        'none': 'no_reset',
+        'no_reset': 'no_reset',
+        'reset_only_agent': 'reset_only_agent',
+        'agent': 'reset_only_agent',
+        'reset_only_wm': 'reset_only_wm',
+        'wm': 'reset_only_wm',
+        'world_model': 'reset_only_wm',
+        'worldmodel': 'reset_only_wm',
+        True: 'reset_all',
+        'true': 'reset_all',
+        'all': 'reset_all',
+        'reset_all': 'reset_all',
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ('no_reset', 'reset_only_agent', 'reset_only_wm', 'reset_all'):
+      raise ValueError(f'Unknown reset_mode: {mode}')
+    return mode
+
+  reset_mode = canonical_reset_mode(getattr(args, 'reset_mode', 'no_reset'))
+  if reset_frequency < 0:
+    raise ValueError(f'reset_frequency must be >= 0, got {reset_frequency}')
+  if revive_epoch < 0:
+    raise ValueError(f'revive_epoch must be >= 0, got {revive_epoch}')
+  next_reset_step = [reset_frequency if reset_frequency > 0 else None]
+  min_replay_for_train = args.batch_size * args.batch_length
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):
@@ -88,6 +121,54 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         replay.update(outs['replay'])
       train_agg.add(mets, prefix='train')
 
+  def revive(mode, epochs, label):
+    if epochs <= 0:
+      print(f'Skip {label}: revive_epoch={epochs}.')
+      return
+    if len(replay) < min_replay_for_train:
+      print(
+          f'Skip {label}: replay too small ({len(replay)} < '
+          f'{min_replay_for_train}).')
+      return
+    done = 0
+    for _ in range(epochs):
+      if len(replay) < min_replay_for_train:
+        break
+      with elements.timer.section('stream_next'):
+        batch = next(stream_train)
+      carry_train[0], outs, mets = agent.train(
+          carry_train[0], batch, train_mode=mode)
+      train_fps.step(batch_steps)
+      if 'replay' in outs:
+        replay.update(outs['replay'])
+      train_agg.add(mets, prefix='train')
+      done += 1
+    print(f'Finished {label}: {done}/{epochs} updates.')
+
+  def periodic_reset():
+    if reset_mode == 'no_reset':
+      print(
+          f'Reset trigger reached at step {step.value}, '
+          'reset_mode=no_reset so no reset/revive executed.')
+      return
+    if reset_mode == 'reset_only_agent':
+      agent.reset_params('agent')
+      print(f'Reset agent at step {step.value}.')
+      revive('agent', revive_epoch, 'agent revive')
+      return
+    if reset_mode == 'reset_only_wm':
+      agent.reset_params('wm')
+      print(f'Reset world model at step {step.value}.')
+      revive('wm', revive_epoch, 'world model revive')
+      return
+    if reset_mode == 'reset_all':
+      agent.reset_params('all')
+      print(f'Reset world model and agent at step {step.value}.')
+      revive('wm', revive_epoch, 'world model revive')
+      revive('agent', revive_epoch, 'agent revive')
+      return
+    raise ValueError(f'Unsupported reset_mode: {reset_mode}')
+
   cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
   cp.agent = agent
@@ -113,6 +194,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   driver.reset(agent.init_policy)
   
   while step < args.steps:
+    if next_reset_step[0] is not None:
+      while step >= next_reset_step[0]:
+        periodic_reset()
+        next_reset_step[0] += reset_frequency
+
     if should_switch(step):
       switch_count += 1
       fns = [bind(make_env, i, switch_count=switch_count) for i in range(args.envs)]
@@ -121,14 +207,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       )
       driver.reset(agent.init_policy)
       replay.clear()
-      reset_mode = getattr(args, 'reset_mode', 'none')
-      if getattr(args, 'reset_on_switch', False):
-        reset_mode = 'all'
-      if reset_mode not in ('none', 'false', False, None):
-        agent.reset_params(reset_mode)
-        print(f"Agent reset at step {step.value} (reset_mode={reset_mode}).")
-      else:
-        print(f"Switched to new environment at step {step.value}.")
+      print(f"Switched to new environment at step {step.value}.")
 
     driver(policy, steps=10)
 

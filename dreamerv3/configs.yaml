@@ -76,10 +76,11 @@ defaults:
     # TODO: additional configs for continual dmc_vision.
     task_repeat: 10
     task_interval: 1e5
-    # Parameter reset on each task switch. `reset_on_switch` is kept for
-    # backward-compatible full resets; `reset_mode` can be all, wm, or agent.
-    reset_on_switch: false
-    reset_mode: none
+    # Periodic model reset for continual runs.
+    # reset_frequency is independent from agent.redo.frequency.
+    reset_frequency: 1e5
+    revive_epoch: 100
+    reset_mode: no_reset
 
   jax:
     platform: cuda
@@ -88,7 +89,7 @@ defaults:
     train_devices: [0]
     mock_devices: 0
     prealloc: True  # False=按需分配显存，True=预分配全部显存（多进程时必须为False）
-    memory_fraction: 0.15
+    memory_fraction: 0.1
     jit: True
     debug: False
     expect_devices: 0
