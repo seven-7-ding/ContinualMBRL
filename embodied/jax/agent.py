@@ -275,7 +275,9 @@ class Agent(embodied.Agent):
     if freeze_mode:
       freeze_keys = [
           k for k in self.params if self._reset_key_matches(k, freeze_mode)]
-      frozen_params = {k: self.params[k] for k in freeze_keys}
+      # _train donates parameter buffers; keep independent copies so frozen
+      # tensors remain valid after the donated call.
+      frozen_params = {k: self.params[k].copy() for k in freeze_keys}
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
     with self.train_lock:
@@ -291,12 +293,11 @@ class Agent(embodied.Agent):
     self.n_updates.increment()
 
     if self.jaxcfg.enable_policy:
-      pending = internal.move(
-          {k: self.params[k] for k in self.policy_keys},
-          self.policy_params_sharding)
-      if self.pending_sync:
-        jax.tree.map(lambda x: x.delete(), self.pending_sync)
-      self.pending_sync = pending
+      if not self.pending_sync:
+        # Copy first to decouple policy sync buffers from train-donated arrays.
+        self.pending_sync = internal.move(
+            {k: self.params[k].copy() for k in self.policy_keys},
+            self.policy_params_sharding)
 
     return_outs = {}
     if self.pending_outs:
@@ -375,6 +376,7 @@ class Agent(embodied.Agent):
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
+      unused = {}
 
       with self.n_updates.lock:
         self.n_updates.value = int(data['counters']['updates'])
@@ -477,17 +479,26 @@ class Agent(embodied.Agent):
         jax.tree.map(lambda x: x.delete(), old_params)
         self.params.update({k: new_params[k] for k in reset_keys})
         unused = {k: v for k, v in new_params.items() if k not in reset_keys}
-        jax.tree.map(lambda x: x.delete(), unused)
 
       if self.jaxcfg.enable_policy:
         jax.tree.map(lambda x: x.delete(), self.policy_params)
-        policy_params = {
-            k: self.params[k].copy() for k in self.policy_keys}
+        policy_params = {}
+        for k in self.policy_keys:
+          try:
+            policy_params[k] = self.params[k].copy()
+          except RuntimeError:
+            if k in unused:
+              self.params[k] = unused.pop(k)
+              policy_params[k] = self.params[k].copy()
+            else:
+              raise
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
         if self.pending_sync:
           jax.tree.map(lambda x: x.delete(), self.pending_sync)
           self.pending_sync = None
+      if unused:
+        jax.tree.map(lambda x: x.delete(), unused)
 
   def _canonical_train_mode(self, mode):
     aliases = {
