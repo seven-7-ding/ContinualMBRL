@@ -376,7 +376,6 @@ class Agent(embodied.Agent):
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
-      unused = {}
 
       with self.n_updates.lock:
         self.n_updates.value = int(data['counters']['updates'])
@@ -454,6 +453,7 @@ class Agent(embodied.Agent):
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
+      unused = {}
 
       if mode == 'all':
         # Reset training counters so scheduler / ReDo start fresh.

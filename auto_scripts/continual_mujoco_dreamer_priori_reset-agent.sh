@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-reset-agent
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(6 7 0 1 2 3 4 5 6 7 6 7)
+CUDA_DEVICES=(0 1 2 0 1 2 0 1 2 0 1 2)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -23,16 +23,18 @@ BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=1024
-TASK_INTERVAL=1000000  # Match VDRL task_steps=200000
-RESET_FREQUENCY=100000
-REVIVE_EPOCH=100
+TASK_INTERVAL=1000000
+RESET_FREQUENCY=500000
+RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k"
+REVIVE_EPOCH=50000
+REVIVE_STRATEGY=threshold
 
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 declare -a SETTINGS=(
-    "no_reset|1000"
-    "no_reset|2000"
-    "no_reset|3000"
+    # "no_reset|1000"
+    # "no_reset|2000"
+    # "no_reset|3000"
     
     "reset_only_agent|1000"
     "reset_only_agent|2000"
@@ -42,9 +44,9 @@ declare -a SETTINGS=(
     "reset_only_wm|2000"
     "reset_only_wm|3000"
 
-    "reset_all|1000"
-    "reset_all|2000"
-    "reset_all|3000"
+    # "reset_all|1000"
+    # "reset_all|2000"
+    # "reset_all|3000"
 )
 
 # ============= Initialize =============
@@ -69,7 +71,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     IFS='|' read -r task_type seed <<< "$setting_spec"
 
     # Create log directory
-    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${task_type}/seed_$seed"
+    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${task_type}_${RESET_FREQUENCY_TAG}/seed_$seed"
     if [ -s "$logdir/train.log" ]; then
         FAILED_DEPLOYMENTS+=("$setting_spec")
         echo "SKIPPED: $task_type with seed $seed (existing log: $logdir/train.log)"
@@ -112,6 +114,7 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.reset_mode "$reset_mode"
         --run.reset_frequency "$RESET_FREQUENCY"
         --run.revive_epoch "$REVIVE_EPOCH"
+        --run.revive_strategy "$REVIVE_STRATEGY"
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length 15

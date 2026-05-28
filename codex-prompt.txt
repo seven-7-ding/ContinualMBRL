@@ -10,4 +10,20 @@
 【5】sh脚本的格式本身也不要动，遵照原样；内容进行修改以实现新功能
 【6】你只能在cuda6/7上进行调试和debug，已有进程不允许进行修改。
 
+修改代码：
+【1】根据/home/jiale/MBRL/ContinualMBRL-reset-agent/logdir/continual_dreamer_reset_agent_size1m/reset_all/seed_1000/train.log中的报错，进行debug，并且测试和验证，确保其不会再reset失败。
+【2】修改reset的逻辑：**添加**一种revive的策略，不是让我来指定每次revive需要训练几个epoch，而是
+    1. reset前，保存对应的model的loss（滑动保存近last_loss_num个loss，默认为10，并取平均值，得到last_loss）
+    2. reset对应的model模块以及对应的optimizer
+    3. 进行revive训练，直到loss值低于last_loss * revive_threshold（默认为1.0），或达到最大步数（这里使用revive_epoch为最大步数）
+【3】注意，添加上述的revive策略后，原先的指定revive_epoch的方法也还保留，让我能够选择性使用。
+【4】在revive时，在wandb等logger中汇报以下指标：
+    1. revive所用的步数（revive_epoch）
+    2. last_loss的值
+【5】只能在cuda6/7上进行测试、debug等，且已有进程不能动。
+
+再修改：【1】使用threshold模式进行revive时，要求的是**各项loss对应都比计算所得的last_loss * revive_threshold小**，比如对于world model 而言，其各个组件对应计算所得的loss都要单独考虑，而不是加在一起进行比较。
+【2】每次revive时，至少进行 max(10, revive_epoch / 100) 次revive 训练，之后再进行loss的比较。
+【3】上述修改均针对revive_strategy=threshold而言，fixed版本的revive照旧即可。
+
 codex resume 019e5895-39af-78a3-a4d9-21409c8dc461

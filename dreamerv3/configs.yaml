@@ -79,7 +79,14 @@ defaults:
     # Periodic model reset for continual runs.
     # reset_frequency is independent from agent.redo.frequency.
     reset_frequency: 1e5
+    # revive_strategy:
+    #   fixed      -> always run exactly revive_epoch steps after reset
+    #   threshold  -> stop when current loss <= last_loss * revive_threshold,
+    #                 or when revive_epoch max steps are reached
+    revive_strategy: fixed
     revive_epoch: 100
+    last_loss_num: 10
+    revive_threshold: 1.0
     reset_mode: no_reset
 
   jax:

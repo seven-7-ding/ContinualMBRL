@@ -7,3 +7,15 @@
 [2026-05-24 18:24:41 +0800] Fixes in embodied/jax/agent.py: avoid donated-buffer reuse in train freeze path; make pending_sync policy-copy safe; robust policy param sync in reset_params with fallback and delayed unused deletion.
 [2026-05-24 18:24:41 +0800] Validation run: logdir/debug_reset_only_agent_fix7/reset_only_agent/seed_0 reached step 1500, printed 'Reset agent at step 1500.' and 'Finished agent revive: 3/3 updates.', then continued to step 1800 and exited code 0.
 [2026-05-24 18:24:41 +0800] Deployment started via auto_scripts/continual_mujoco_dreamer_priori_reset-agent.sh (session 32524). Confirmed launches [1/12] and [2/12].
+[2026-05-25 12:02:06 +0800] Task: debug reset_all failure from logdir/continual_dreamer_reset_agent_size1m/reset_all/seed_1000/train.log and implement optional threshold-based revive while keeping fixed revive.
+[2026-05-25 12:02:06 +0800] Root cause: UnboundLocalError for local variable 'unused' in embodied/jax/agent.py reset_params(mode='all').
+[2026-05-25 12:02:06 +0800] Code changes: fixed reset_params scope bug; added run.revive_strategy/run.last_loss_num/run.revive_threshold; added rolling wm/agent loss windows and threshold revive stop condition in embodied/run/continual_train.py; added revive metrics logging (revive_epoch,last_loss,target_loss,final_loss) to logger/wandb.
+[2026-05-25 12:02:06 +0800] Validation (CUDA 6/7 only):
+[2026-05-25 12:02:06 +0800] - threshold mode run: logdir/debug_reset_all_threshold_fix3/reset_all/seed_0; reset at step 1500; wm revive 4/4; agent revive 1/4; continued to step 1600 and exited 0.
+[2026-05-25 12:02:06 +0800] - fixed mode run: logdir/debug_reset_fixed_keep/reset_only_agent/seed_0; reset at step 1500; agent revive 2/2; continued to step 1600 and exited 0.
+[2026-05-25 12:02:06 +0800] - verified revive metrics in metrics.jsonl include revive_epoch and last_loss.
+[2026-05-25 12:36:33 +0800] Follow-up task: threshold revive should require per-component loss checks and minimum revive warmup steps before checking.
+[2026-05-25 12:36:33 +0800] Implemented in embodied/run/continual_train.py: component-wise rolling last losses, component-wise threshold checks, threshold check only after min_steps=max(10, ceil(revive_epoch/100)); fixed strategy unchanged in stopping behavior.
+[2026-05-25 12:36:33 +0800] Validation (CUDA 6/7):
+[2026-05-25 12:36:33 +0800] - threshold run logdir/debug_threshold_componentwise/reset_all/seed_0: reset at step 1500; wm revive 12/12 and agent revive 12/12 with min_check_steps=10 shown; training continued to step 1600 and exited 0.
+[2026-05-25 12:36:33 +0800] - fixed regression run logdir/debug_fixed_regression_after_threshold/reset_only_agent/seed_0: reset at step 1500; agent revive remained exactly 2/2; training continued to step 1600 and exited 0.

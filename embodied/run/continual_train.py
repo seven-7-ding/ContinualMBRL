@@ -39,6 +39,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   should_switch = elements.when.Every(args.task_interval, initial=True)
   reset_frequency = int(getattr(args, 'reset_frequency', 0) or 0)
   revive_epoch = int(getattr(args, 'revive_epoch', 100) or 0)
+  revive_strategy = str(getattr(args, 'revive_strategy', 'fixed')).lower()
+  last_loss_num = int(getattr(args, 'last_loss_num', 10) or 0)
+  revive_threshold = float(getattr(args, 'revive_threshold', 1.0))
 
   def canonical_reset_mode(mode):
     aliases = {
@@ -68,8 +71,64 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     raise ValueError(f'reset_frequency must be >= 0, got {reset_frequency}')
   if revive_epoch < 0:
     raise ValueError(f'revive_epoch must be >= 0, got {revive_epoch}')
+  if revive_strategy not in ('fixed', 'threshold'):
+    raise ValueError(
+        f"revive_strategy must be 'fixed' or 'threshold', got "
+        f'{revive_strategy}')
+  if last_loss_num <= 0:
+    raise ValueError(f'last_loss_num must be > 0, got {last_loss_num}')
+  if revive_threshold <= 0:
+    raise ValueError(f'revive_threshold must be > 0, got {revive_threshold}')
   next_reset_step = [reset_frequency if reset_frequency > 0 else None]
   min_replay_for_train = args.batch_size * args.batch_length
+  agent_terms = {'policy', 'value', 'repval'}
+  loss_windows = {
+      'wm': collections.defaultdict(
+          lambda: collections.deque(maxlen=last_loss_num)),
+      'agent': collections.defaultdict(
+          lambda: collections.deque(maxlen=last_loss_num)),
+  }
+
+  def extract_loss_items(mets):
+    vals = {}
+    for key, value in mets.items():
+      if not key.startswith('loss/'):
+        continue
+      name = key.split('/', 1)[1]
+      val = float(value)
+      if np.isfinite(val):
+        vals[name] = val
+    return vals
+
+  def split_mode_losses(mets):
+    vals = extract_loss_items(mets)
+    wm_vals = {k: v for k, v in vals.items() if k not in agent_terms}
+    agent_vals = {k: v for k, v in vals.items() if k in agent_terms}
+    return wm_vals, agent_vals
+
+  def update_loss_windows(mets):
+    wm_losses, agent_losses = split_mode_losses(mets)
+    for name, val in wm_losses.items():
+      loss_windows['wm'][name].append(val)
+    for name, val in agent_losses.items():
+      loss_windows['agent'][name].append(val)
+
+  def current_mode_losses(mode, mets):
+    wm_losses, agent_losses = split_mode_losses(mets)
+    return wm_losses if mode == 'wm' else agent_losses
+
+  def get_last_loss(mode):
+    result = {}
+    for name, history in loss_windows[mode].items():
+      values = list(history)
+      if values:
+        result[name] = float(np.mean(values))
+    return result or None
+
+  def mean_loss_dict(loss_dict):
+    if not loss_dict:
+      return np.nan
+    return float(np.mean(list(loss_dict.values())))
 
   @elements.timer.section('logfn')
   def logfn(tran, worker):
@@ -119,19 +178,27 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       train_fps.step(batch_steps)
       if 'replay' in outs:
         replay.update(outs['replay'])
+      update_loss_windows(mets)
       train_agg.add(mets, prefix='train')
 
-  def revive(mode, epochs, label):
-    if epochs <= 0:
-      print(f'Skip {label}: revive_epoch={epochs}.')
+  def revive(mode, max_steps, label, last_losses):
+    if max_steps <= 0:
+      print(f'Skip {label}: revive_epoch={max_steps}.')
       return
     if len(replay) < min_replay_for_train:
       print(
           f'Skip {label}: replay too small ({len(replay)} < '
           f'{min_replay_for_train}).')
       return
+    target_losses = None
+    if last_losses is not None:
+      target_losses = {
+          name: value * revive_threshold
+          for name, value in last_losses.items()}
+    min_steps_before_threshold_check = max(10, int(np.ceil(max_steps / 100.0)))
     done = 0
-    for _ in range(epochs):
+    final_losses = {}
+    for _ in range(max_steps):
       if len(replay) < min_replay_for_train:
         break
       with elements.timer.section('stream_next'):
@@ -141,9 +208,44 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       train_fps.step(batch_steps)
       if 'replay' in outs:
         replay.update(outs['replay'])
+      update_loss_windows(mets)
       train_agg.add(mets, prefix='train')
       done += 1
-    print(f'Finished {label}: {done}/{epochs} updates.')
+      cur_losses = current_mode_losses(mode, mets)
+      if cur_losses:
+        final_losses = cur_losses
+      if revive_strategy == 'threshold' and target_losses:
+        if done < min_steps_before_threshold_check:
+          continue
+        all_matched = True
+        for name, target in target_losses.items():
+          cur = final_losses.get(name, np.inf)
+          if not np.isfinite(cur) or cur > target:
+            all_matched = False
+            break
+        if all_matched:
+          break
+    revive_mets = {
+        'revive_epoch': float(done),
+        'last_loss': mean_loss_dict(last_losses),
+        'target_loss': mean_loss_dict(target_losses),
+        'final_loss': mean_loss_dict(final_losses),
+        'min_steps_before_threshold_check': float(
+            min_steps_before_threshold_check),
+    }
+    for name, value in (last_losses or {}).items():
+      revive_mets[f'last_loss/{name}'] = value
+    for name, value in (target_losses or {}).items():
+      revive_mets[f'target_loss/{name}'] = value
+    for name, value in (final_losses or {}).items():
+      revive_mets[f'final_loss/{name}'] = value
+    logger.add(revive_mets, prefix=f'revive/{mode}')
+    logger.write()
+    print(
+        f'Finished {label}: {done}/{max_steps} updates '
+        f'(strategy={revive_strategy}, min_check_steps='
+        f'{min_steps_before_threshold_check}, last_losses={last_losses}, '
+        f'target_losses={target_losses}, final_losses={final_losses}).')
 
   def periodic_reset():
     if reset_mode == 'no_reset':
@@ -152,20 +254,26 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           'reset_mode=no_reset so no reset/revive executed.')
       return
     if reset_mode == 'reset_only_agent':
+      last_loss = get_last_loss('agent')
       agent.reset_params('agent')
-      print(f'Reset agent at step {step.value}.')
-      revive('agent', revive_epoch, 'agent revive')
+      print(f'Reset agent at step {step.value}. last_loss={last_loss}')
+      revive('agent', revive_epoch, 'agent revive', last_loss)
       return
     if reset_mode == 'reset_only_wm':
+      last_loss = get_last_loss('wm')
       agent.reset_params('wm')
-      print(f'Reset world model at step {step.value}.')
-      revive('wm', revive_epoch, 'world model revive')
+      print(f'Reset world model at step {step.value}. last_loss={last_loss}')
+      revive('wm', revive_epoch, 'world model revive', last_loss)
       return
     if reset_mode == 'reset_all':
+      last_wm_loss = get_last_loss('wm')
+      last_agent_loss = get_last_loss('agent')
       agent.reset_params('all')
-      print(f'Reset world model and agent at step {step.value}.')
-      revive('wm', revive_epoch, 'world model revive')
-      revive('agent', revive_epoch, 'agent revive')
+      print(
+          f'Reset world model and agent at step {step.value}. '
+          f'last_wm_loss={last_wm_loss}, last_agent_loss={last_agent_loss}')
+      revive('wm', revive_epoch, 'world model revive', last_wm_loss)
+      revive('agent', revive_epoch, 'agent revive', last_agent_loss)
       return
     raise ValueError(f'Unsupported reset_mode: {reset_mode}')
 
