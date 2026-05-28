@@ -1,0 +1,12 @@
+[2026-05-28 11:02:43 HKT] Task: add partial reset modes, preserve reset reinit behavior, log reset frequency to wandb, validate only on cuda6/7 without touching existing processes.
+[2026-05-28 11:03:20 HKT] Inspected reset entrypoints and parameter naming. Next: implement partial reset modes and validate on cuda6/7 only.
+[2026-05-28 11:05:10 HKT] Applied code changes for new reset modes, wandb reset_frequency logging, and script root resolution. Starting static validation.
+[2026-05-28 11:09:40 HKT] Runtime validation via full JAX agent init on cuda6 was too heavy/slow; terminated that process and switched to lightweight matcher validation plus static checks.
+[2026-05-28 11:11:10 HKT] Static validation passed (py_compile, bash -n). Lightweight matcher validation passed on cuda6 context. Ready to report changes.
+[2026-05-28 11:18:00 HKT] User requested deeper reset verification. Plan: instantiate minimal agent on cuda6, inspect actual parameter diffs and optimizer-state diffs per reset mode, verify touched and untouched modules.
+[2026-05-28 11:24:40 HKT] User clarified last-two-layers means count backward by linear layers and include all intervening layers. Stopped ongoing validation to update decoder/head matching accordingly.
+[2026-05-28 11:26:20 HKT] Updated decoder head-tail matching to count backward by Linear layers and include intervening conv/norm blocks; static and matcher validation next.
+[2026-05-28 11:31:30 HKT] Deep validation completed on cuda6. Real agent checks passed for reset_only_rssm, reset_all_heads, reset_agent_heads, reset_wm_heads: target params returned to init, non-target params stayed trained, optimizer state returned to init. For priori/vector obs, decoder vec branch was exercised; image-decoder span was checked by matcher validation.
+[2026-05-28 11:33:30 HKT] User clarified optimizer reset should be partial too. Inspecting optimizer state key naming to reset only states corresponding to touched params.
+[2026-05-28 11:37:20 HKT] Updated partial reset to only reset optimizer states whose suffix matches reset parameter keys. Starting verification.
+[2026-05-28 11:43:10 HKT] Partial optimizer reset verification passed on cuda6. Only optimizer state entries corresponding to reset params returned to init; other optimizer entries stayed at trained values.

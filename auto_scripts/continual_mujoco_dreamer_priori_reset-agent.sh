@@ -1,10 +1,12 @@
 #!/bin/bash
 
 # ============= Configuration =============
-cd /home/jiale/MBRL/ContinualMBRL-reset-agent
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(0 1 2 0 1 2 0 1 2 0 1 2)
+CUDA_DEVICES=(6 7 6 7 0 1 2 3 4 5 6 7)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -24,9 +26,9 @@ BASE_LOGDIR_ROOT="logdir"
 # Training configuration
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
-RESET_FREQUENCY=500000
+RESET_FREQUENCY=250000
 RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k"
-REVIVE_EPOCH=50000
+REVIVE_EPOCH=25000
 REVIVE_STRATEGY=threshold
 
 # ============= Settings Definition =============
@@ -36,13 +38,29 @@ declare -a SETTINGS=(
     # "no_reset|2000"
     # "no_reset|3000"
     
-    "reset_only_agent|1000"
-    "reset_only_agent|2000"
-    "reset_only_agent|3000"
+    # "reset_only_agent|1000"
+    # "reset_only_agent|2000"
+    # "reset_only_agent|3000"
 
-    "reset_only_wm|1000"
-    "reset_only_wm|2000"
-    "reset_only_wm|3000"
+    # "reset_only_wm|1000"
+    # "reset_only_wm|2000"
+    # "reset_only_wm|3000"
+
+    "reset_only_rssm|1000"
+    "reset_only_rssm|2000"
+    "reset_only_rssm|3000"
+
+    "reset_all_heads|1000"
+    "reset_all_heads|2000"
+    "reset_all_heads|3000"
+
+    "reset_agent_heads|1000"
+    "reset_agent_heads|2000"
+    "reset_agent_heads|3000"
+
+    "reset_wm_heads|1000"
+    "reset_wm_heads|2000"
+    "reset_wm_heads|3000"
 
     # "reset_all|1000"
     # "reset_all|2000"
@@ -83,13 +101,9 @@ for setting_spec in "${SETTINGS[@]}"; do
     device_num="${CUDA_DEVICES[$run_counter % ${#CUDA_DEVICES[@]}]}"
 
     # Periodic reset configuration.
-    reset_mode="no_reset"
-    if [[ "$task_type" == "reset_only_agent" ]]; then
-        reset_mode="reset_only_agent"
-    elif [[ "$task_type" == "reset_only_wm" ]]; then
-        reset_mode="reset_only_wm"
-    elif [[ "$task_type" == "reset_all" ]]; then
-        reset_mode="reset_all"
+    reset_mode="$task_type"
+    if [[ "$task_type" == "no_reset" ]]; then
+        reset_mode="no_reset"
     fi
 
     # ReDo analysis is always enabled. The per-analyser log item controls

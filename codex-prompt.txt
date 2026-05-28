@@ -1,0 +1,11 @@
+帮我修改/home/jiale/MBRL/ContinualMBRL-reset-partial/auto_scripts/continual_mujoco_dreamer_priori_reset-agent.sh中启动的程序：
+【1】现在的reset要么重置整个agent，要么重置整个world model。我需要如下几种新的reset mode：
+    1. 仅仅reset world model中的RSSM模块，其他的部分不动
+    2. 仅仅reset 全部的head（包括agent对应的head和world model的head）的后两层，其他部分不变
+    3. 仅reset agent对应的value head和policy head的后两层，其他部分不变
+    4. 仅reset world model对应的head的后两层（包括reward head、con head和decoder等）
+【2】reset时，要重新初始化参数、optimizer等，具体的逻辑保持和原先一样。
+【3】在wandb的logging时，将reset的frequency也上传作为一个可视化的指标（当然这个参数是不会变的）
+【4】只能在cuda6/7上进行debug和验证实验，不允许动已有的进程。
+
+codex resume 019e6c88-34f0-7683-be47-b434082391df

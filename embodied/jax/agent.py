@@ -430,9 +430,20 @@ class Agent(embodied.Agent):
         'world_model': 'wm',
         'worldmodel': 'wm',
         'reset_only_agent': 'agent',
+        'reset_only_rssm': 'rssm',
+        'rssm': 'rssm',
+        'reset_all_heads': 'all_heads',
+        'all_heads': 'all_heads',
+        'reset_only_agent_heads': 'agent_heads',
+        'reset_agent_heads': 'agent_heads',
+        'agent_heads': 'agent_heads',
+        'reset_only_wm_heads': 'wm_heads',
+        'reset_wm_heads': 'wm_heads',
+        'wm_heads': 'wm_heads',
     }
     mode = aliases.get(mode, mode)
-    if mode not in ('all', 'wm', 'agent'):
+    if mode not in (
+        'all', 'wm', 'agent', 'rssm', 'all_heads', 'agent_heads', 'wm_heads'):
       raise ValueError(f'Unknown reset mode: {mode}')
 
     # nj.Tree caches its treedef after the first call to read()/write().
@@ -469,10 +480,14 @@ class Agent(embodied.Agent):
         jax.tree.map(lambda x: x.delete(), self.params)
         self.params = new_params
       else:
+        matched_param_keys = {
+            k for k in self.params
+            if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
         reset_keys = [
             k for k in self.params
-            if (self._reset_key_matches(k, mode) or k.startswith('opt/'))
-            and k in new_params]
+            if k in new_params and (
+                k in matched_param_keys or
+                self._opt_state_matches_param_reset(k, matched_param_keys))]
         if not reset_keys:
           raise ValueError(f'No parameters matched reset mode: {mode}')
         old_params = {k: self.params[k] for k in reset_keys}
@@ -521,13 +536,78 @@ class Agent(embodied.Agent):
     return mode
 
   def _reset_key_matches(self, key, mode):
-    wm_modules = ('enc', 'dyn', 'dec', 'rew', 'con')
-    agent_modules = (
-        'pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm',
-        'advnorm')
-    modules = wm_modules if mode == 'wm' else agent_modules
-    return any(key == module or key.startswith(f'{module}/') or
-               f'/{module}/' in key for module in modules)
+    if mode == 'wm':
+      return self._matches_modules(key, ('enc', 'dyn', 'dec', 'rew', 'con'))
+    if mode == 'agent':
+      return self._matches_modules(
+          key,
+          ('pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm',
+           'advnorm'))
+    if mode == 'rssm':
+      return self._matches_modules(key, ('dyn',))
+    if mode == 'all_heads':
+      return (
+          self._matches_agent_head_tail(key) or
+          self._matches_wm_head_tail(key))
+    if mode == 'agent_heads':
+      return self._matches_agent_head_tail(key)
+    if mode == 'wm_heads':
+      return self._matches_wm_head_tail(key)
+    raise ValueError(f'Unknown reset key match mode: {mode}')
+
+  def _matches_modules(self, key, modules):
+    return any(
+        key == module or key.startswith(f'{module}/') or f'/{module}/' in key
+        for module in modules)
+
+  def _opt_state_matches_param_reset(self, key, param_keys):
+    if not key.startswith('opt/'):
+      return False
+    return any(key.endswith(f'/{param_key}') for param_key in param_keys)
+
+  def _matches_layer_prefix(self, key, prefix):
+    return key == prefix or key.startswith(f'{prefix}/')
+
+  def _head_tail_prefixes(self, module, layers):
+    prefixes = [f'{module}/head']
+    if layers > 0:
+      last = layers - 1
+      prefixes += [f'{module}/mlp/linear{last}', f'{module}/mlp/norm{last}']
+    return tuple(prefixes)
+
+  def _decoder_tail_prefixes(self):
+    prefixes = []
+    vec_layers = getattr(self.model.dec, 'layers', 0)
+    if vec_layers > 0:
+      last = vec_layers - 1
+      prefixes += [f'dec/mlp/linear{last}', f'dec/mlp/norm{last}', 'dec/vec']
+    depths = getattr(self.model.dec, 'depths', ())
+    if depths:
+      prefixes += ['dec/imgout']
+      for i in reversed(range(len(depths) - 1)):
+        prefixes += [f'dec/conv{i}', f'dec/conv{i}norm']
+      if getattr(self.model.dec, 'bspace', 0):
+        prefixes += ['dec/spnorm', 'dec/sp0', 'dec/sp1', 'dec/sp1norm', 'dec/sp2']
+      else:
+        prefixes += ['dec/space', 'dec/spacenorm']
+    return tuple(prefixes)
+
+  def _matches_agent_head_tail(self, key):
+    prefixes = (
+        *self._head_tail_prefixes('pol', getattr(self.model.pol, 'layers', 0)),
+        *self._head_tail_prefixes('val', getattr(self.model.val, 'layers', 0)),
+        *self._head_tail_prefixes(
+            'slowval', getattr(self.model.slowval.model, 'layers', 0)),
+    )
+    return any(self._matches_layer_prefix(key, prefix) for prefix in prefixes)
+
+  def _matches_wm_head_tail(self, key):
+    prefixes = (
+        *self._head_tail_prefixes('rew', getattr(self.model.rew, 'layers', 0)),
+        *self._head_tail_prefixes('con', getattr(self.model.con, 'layers', 0)),
+        *self._decoder_tail_prefixes(),
+    )
+    return any(self._matches_layer_prefix(key, prefix) for prefix in prefixes)
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)

@@ -87,6 +87,15 @@ defaults:
     revive_epoch: 100
     last_loss_num: 10
     revive_threshold: 1.0
+    # reset_mode:
+    #   no_reset
+    #   reset_only_agent
+    #   reset_only_wm
+    #   reset_only_rssm
+    #   reset_all_heads
+    #   reset_agent_heads
+    #   reset_wm_heads
+    #   reset_all
     reset_mode: no_reset
 
   jax:
