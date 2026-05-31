@@ -272,12 +272,18 @@ class Agent(embodied.Agent):
     elif train_mode == 'agent':
       freeze_mode = 'wm'
     frozen_params = {}
+    frozen_opt_state = {}
     if freeze_mode:
       freeze_keys = [
-          k for k in self.params if self._reset_key_matches(k, freeze_mode)]
+          k for k in self.params
+          if not k.startswith('opt/') and self._reset_key_matches(k, freeze_mode)]
       # _train donates parameter buffers; keep independent copies so frozen
       # tensors remain valid after the donated call.
       frozen_params = {k: self.params[k].copy() for k in freeze_keys}
+      frozen_opt_keys = [
+          k for k in self.params
+          if self._opt_state_matches_param_keys(k, freeze_keys)]
+      frozen_opt_state = {k: self.params[k].copy() for k in frozen_opt_keys}
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
     with self.train_lock:
@@ -287,8 +293,9 @@ class Agent(embodied.Agent):
           self.params, carry, outs, mets = self._train(
               dona, allo, seed, carry, data)
       if frozen_params:
-        replaced = {k: self.params[k] for k in frozen_params}
-        self.params.update(frozen_params)
+        restored = {**frozen_params, **frozen_opt_state}
+        replaced = {k: self.params[k] for k in restored}
+        self.params.update(restored)
         jax.tree.map(lambda x: x.delete(), replaced)
     self.n_updates.increment()
 
@@ -528,6 +535,11 @@ class Agent(embodied.Agent):
     modules = wm_modules if mode == 'wm' else agent_modules
     return any(key == module or key.startswith(f'{module}/') or
                f'/{module}/' in key for module in modules)
+
+  def _opt_state_matches_param_keys(self, key, param_keys):
+    if not key.startswith('opt/'):
+      return False
+    return any(key.endswith(f'/{param_key}') for param_key in param_keys)
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)

@@ -19,3 +19,6 @@
 [2026-05-25 12:36:33 +0800] Validation (CUDA 6/7):
 [2026-05-25 12:36:33 +0800] - threshold run logdir/debug_threshold_componentwise/reset_all/seed_0: reset at step 1500; wm revive 12/12 and agent revive 12/12 with min_check_steps=10 shown; training continued to step 1600 and exited 0.
 [2026-05-25 12:36:33 +0800] - fixed regression run logdir/debug_fixed_regression_after_threshold/reset_only_agent/seed_0: reset at step 1500; agent revive remained exactly 2/2; training continued to step 1600 and exited 0.
+[2026-05-31 00:00:00 HKT] Task: analyze revive-time optimizer-state behavior for frozen parts in ContinualMBRL-reset-agent and fix so only reset parts receive extra training during revive.
+[2026-05-31 00:00:00 HKT] Patched train(train_mode=...) to restore frozen optimizer state as well as frozen params. Starting cuda6 verification.
+[2026-05-31 00:00:00 HKT] Verification passed on cuda7: train_mode=wm kept frozen agent params/opt unchanged; train_mode=agent kept frozen wm params/opt unchanged. Revive now only updates the reset side.

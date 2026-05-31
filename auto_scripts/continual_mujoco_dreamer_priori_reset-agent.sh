@@ -4,7 +4,7 @@
 cd /home/jiale/MBRL/ContinualMBRL-reset-agent
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(0 1 2 0 1 2 0 1 2 0 1 2)
+CUDA_DEVICES=(0 1 2 0 1 2 0 1 2)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -24,9 +24,9 @@ BASE_LOGDIR_ROOT="logdir"
 # Training configuration
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
-RESET_FREQUENCY=500000
-RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k"
-REVIVE_EPOCH=50000
+RESET_FREQUENCY=250000
+RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k_1w_revive"
+REVIVE_EPOCH=10000
 REVIVE_STRATEGY=threshold
 
 # ============= Settings Definition =============
