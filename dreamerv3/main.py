@@ -5,6 +5,25 @@ import pathlib
 import sys
 from functools import partial as bind
 
+
+def _set_default_jax_env():
+  os.environ.setdefault('TF_CUDNN_DETERMINISTIC', '1')
+  flags = os.environ.get('XLA_FLAGS', '').split()
+
+  def add(flag):
+    if flag not in flags:
+      flags.append(flag)
+
+  # Set deterministic GPU flags before importing embodied/jax, because those
+  # modules import jax eagerly and late XLA flag updates are not guaranteed to
+  # take effect for the current process.
+  add('--xla_gpu_autotune_level=1')
+  add('--xla_gpu_deterministic_ops=true')
+  os.environ['XLA_FLAGS'] = ' '.join(flags)
+
+
+_set_default_jax_env()
+
 folder = pathlib.Path(__file__).parent
 sys.path.insert(0, str(folder.parent))
 sys.path.insert(1, str(folder.parent.parent))

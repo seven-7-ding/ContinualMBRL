@@ -10,3 +10,11 @@
 [2026-05-28 11:33:30 HKT] User clarified optimizer reset should be partial too. Inspecting optimizer state key naming to reset only states corresponding to touched params.
 [2026-05-28 11:37:20 HKT] Updated partial reset to only reset optimizer states whose suffix matches reset parameter keys. Starting verification.
 [2026-05-28 11:43:10 HKT] Partial optimizer reset verification passed on cuda6. Only optimizer state entries corresponding to reset params returned to init; other optimizer entries stayed at trained values.
+[2026-05-31 00:00:00 HKT] Sync revive freeze+optimizer-state fix from reset-agent repo into ContinualMBRL-reset-partial and validate on cuda6/7.
+[2026-05-31 00:00:00 HKT] Patched reset-partial revive path to restore frozen optimizer state too. Starting cuda validation.
+[2026-05-31 00:00:00 HKT] Verification passed on cuda7 for reset-partial: train_mode=wm kept frozen agent params/opt unchanged; train_mode=agent kept frozen wm params/opt unchanged.
+[2026-05-31 00:00:00 HKT] Extending reset-partial revive/train_mode handling to all reset modes so only reset subsets receive extra training.
+[2026-05-31 00:00:00 HKT] Updated all revive modes to fine-grained train_mode semantics. Starting verification for rssm/wm_heads/agent_heads/all_heads.
+[2026-05-31 00:00:00 HKT] New task: audit seed propagation and pre-reset equivalence across reset modes in reset-partial; verify from code and existing logs, then fix if needed.
+[2026-05-31 00:00:00 HKT] Moved deterministic XLA/CUDNN defaults before embodied/jax import and merged XLA_FLAGS in internal.setup. Starting targeted determinism regression test.
+[2026-05-31 00:00:00 HKT] User clarified no further fix needed if issue is not seed logic. Stopping extra determinism probe and proceeding to execute deployment script as-is.

@@ -133,13 +133,34 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     for name, val in agent_losses.items():
       loss_windows['agent'][name].append(val)
 
+  def loss_bucket(mode):
+    if mode in ('wm', 'rssm', 'wm_heads'):
+      return 'wm'
+    if mode in ('agent', 'agent_heads'):
+      return 'agent'
+    if mode in ('all', 'all_heads'):
+      return 'all'
+    raise ValueError(f'Unknown loss bucket mode: {mode}')
+
   def current_mode_losses(mode, mets):
     wm_losses, agent_losses = split_mode_losses(mets)
-    return wm_losses if mode == 'wm' else agent_losses
+    bucket = loss_bucket(mode)
+    if bucket == 'wm':
+      return wm_losses
+    if bucket == 'agent':
+      return agent_losses
+    return {**wm_losses, **agent_losses}
 
   def get_last_loss(mode):
+    bucket = loss_bucket(mode)
+    if bucket == 'all':
+      wm = get_last_loss('wm')
+      agent = get_last_loss('agent')
+      if wm and agent:
+        return {**wm, **agent}
+      return wm or agent
     result = {}
-    for name, history in loss_windows[mode].items():
+    for name, history in loss_windows[bucket].items():
       values = list(history)
       if values:
         result[name] = float(np.mean(values))
@@ -274,10 +295,10 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           'reset_mode=no_reset so no reset/revive executed.')
       return
     if reset_mode == 'reset_only_rssm':
-      last_loss = get_last_loss('wm')
+      last_loss = get_last_loss('rssm')
       agent.reset_params('rssm')
       print(f'Reset RSSM at step {step.value}. last_loss={last_loss}')
-      revive('wm', revive_epoch, 'RSSM revive', last_loss)
+      revive('rssm', revive_epoch, 'RSSM revive', last_loss)
       return
     if reset_mode == 'reset_only_agent':
       last_loss = get_last_loss('agent')
@@ -286,12 +307,12 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       revive('agent', revive_epoch, 'agent revive', last_loss)
       return
     if reset_mode == 'reset_agent_heads':
-      last_loss = get_last_loss('agent')
+      last_loss = get_last_loss('agent_heads')
       agent.reset_params('agent_heads')
       print(
           f'Reset agent policy/value head tails at step {step.value}. '
           f'last_loss={last_loss}')
-      revive('agent', revive_epoch, 'agent head revive', last_loss)
+      revive('agent_heads', revive_epoch, 'agent head revive', last_loss)
       return
     if reset_mode == 'reset_only_wm':
       last_loss = get_last_loss('wm')
@@ -300,22 +321,19 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       revive('wm', revive_epoch, 'world model revive', last_loss)
       return
     if reset_mode == 'reset_wm_heads':
-      last_loss = get_last_loss('wm')
+      last_loss = get_last_loss('wm_heads')
       agent.reset_params('wm_heads')
       print(
           f'Reset world model head tails at step {step.value}. '
           f'last_loss={last_loss}')
-      revive('wm', revive_epoch, 'world model head revive', last_loss)
+      revive('wm_heads', revive_epoch, 'world model head revive', last_loss)
       return
     if reset_mode == 'reset_all_heads':
-      last_wm_loss = get_last_loss('wm')
-      last_agent_loss = get_last_loss('agent')
+      last_loss = get_last_loss('all_heads')
       agent.reset_params('all_heads')
       print(
-          f'Reset all head tails at step {step.value}. '
-          f'last_wm_loss={last_wm_loss}, last_agent_loss={last_agent_loss}')
-      revive('wm', revive_epoch, 'world model head revive', last_wm_loss)
-      revive('agent', revive_epoch, 'agent head revive', last_agent_loss)
+          f'Reset all head tails at step {step.value}. last_loss={last_loss}')
+      revive('all_heads', revive_epoch, 'all head revive', last_loss)
       return
     if reset_mode == 'reset_all':
       last_wm_loss = get_last_loss('wm')

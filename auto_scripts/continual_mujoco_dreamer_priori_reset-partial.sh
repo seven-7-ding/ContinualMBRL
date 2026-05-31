@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(6 7 6 7 0 1 2 3 4 5 6 7)
+CUDA_DEVICES=(3 4 5 6 7 3 4 5 6 7 3 4 5 6 7)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -15,7 +15,7 @@ MAX_RUNS_PER_GPU=1
 TASK_STRING="walker_run|hopper_hop|fish_swim"
 
 # Prefix for log directories
-PREFIX="continual_dreamer_reset_agent"
+PREFIX="continual_dreamer_reset_partial"
 
 # Model configuration
 MODEL_SIZE="size1m"  # Options: size0.5m, size1m, size12m, size50m, etc.
@@ -27,8 +27,8 @@ BASE_LOGDIR_ROOT="logdir"
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
 RESET_FREQUENCY=250000
-RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k"
-REVIVE_EPOCH=25000
+RESET_FREQUENCY_TAG="$((RESET_FREQUENCY / 1000))k_1w_revive"
+REVIVE_EPOCH=10000
 REVIVE_STRATEGY=threshold
 
 # ============= Settings Definition =============
@@ -42,9 +42,9 @@ declare -a SETTINGS=(
     # "reset_only_agent|2000"
     # "reset_only_agent|3000"
 
-    # "reset_only_wm|1000"
-    # "reset_only_wm|2000"
-    # "reset_only_wm|3000"
+    "reset_only_wm|1000"
+    "reset_only_wm|2000"
+    "reset_only_wm|3000"
 
     "reset_only_rssm|1000"
     "reset_only_rssm|2000"
@@ -148,7 +148,7 @@ for setting_spec in "${SETTINGS[@]}"; do
     pid=$!
 
     run_counter=$((run_counter + 1))
-    sleep 100
+    sleep 50
     echo ""
 done
 
