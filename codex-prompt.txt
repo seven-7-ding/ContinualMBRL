@@ -8,4 +8,4 @@
 【3】在wandb的logging时，将reset的frequency也上传作为一个可视化的指标（当然这个参数是不会变的）
 【4】只能在cuda6/7上进行debug和验证实验，不允许动已有的进程。
 
-codex resume 019e6c88-34f0-7683-be47-b434082391df
+codex resume 019e83b1-8803-7710-80e3-c3898a490810

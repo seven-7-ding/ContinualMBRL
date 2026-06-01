@@ -18,3 +18,7 @@
 [2026-05-31 00:00:00 HKT] New task: audit seed propagation and pre-reset equivalence across reset modes in reset-partial; verify from code and existing logs, then fix if needed.
 [2026-05-31 00:00:00 HKT] Moved deterministic XLA/CUDNN defaults before embodied/jax import and merged XLA_FLAGS in internal.setup. Starting targeted determinism regression test.
 [2026-05-31 00:00:00 HKT] User clarified no further fix needed if issue is not seed logic. Stopping extra determinism probe and proceeding to execute deployment script as-is.
+[2026-06-01 23:09:00 HKT] Task: determine whether revive_epoch=0 in auto_scripts/continual_mujoco_dreamer_priori_reset-partial.sh achieves reset-without-revive; if not, patch for backward-compatible support and validate.
+[2026-06-01 23:10:00 HKT] Inspected launcher and config; now locating runtime reset/revive implementation to verify revive_epoch=0 semantics.
+[2026-06-01 23:13:00 HKT] Patched launcher scripts to make revive_epoch=0 explicit in log tags/startup output while preserving existing revive behavior. Running bash -n and re-checking continual_train reset/revive semantics.
+[2026-06-01 23:14:00 HKT] Validation passed: bash -n succeeded for both launcher scripts. Confirmed continual_train already skips revive when revive_epoch<=0 and reset_all resets both wm+agent before env switch at the task boundary.
