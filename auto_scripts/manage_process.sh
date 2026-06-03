@@ -7,48 +7,80 @@ echo "============================================"
 echo "Interactive Process Kill Tool"
 echo "============================================"
 echo ""
-echo "Please enter search patterns to filter processes."
+echo "Please enter positive search patterns to filter processes."
+echo "Processes must match all positive patterns."
 echo "You can enter multiple patterns (press Enter after each)."
 echo "Type 'done' when you're finished adding patterns."
 echo ""
 
-# Array to store search patterns
-declare -a PATTERNS=()
+# Arrays to store search patterns
+declare -a POSITIVE_PATTERNS=()
+declare -a NEGATIVE_PATTERNS=()
 
-# Collect search patterns from user
+# Collect positive search patterns from user
 while true; do
-    read -p "Enter search pattern (or 'done' to finish): " pattern
+    read -p "Enter positive search pattern (or 'done' to finish): " pattern
     
     if [ "$pattern" = "done" ]; then
         break
     fi
     
     if [ -n "$pattern" ]; then
-        PATTERNS+=("$pattern")
-        echo "  ✓ Added pattern: '$pattern'"
+        POSITIVE_PATTERNS+=("$pattern")
+        echo "  ✓ Added positive pattern: '$pattern'"
     fi
 done
 
 echo ""
 
-# Check if any patterns were provided
-if [ ${#PATTERNS[@]} -eq 0 ]; then
-    echo "❌ No search patterns provided. Exiting."
+# Check if any positive patterns were provided
+if [ ${#POSITIVE_PATTERNS[@]} -eq 0 ]; then
+    echo "❌ No positive search patterns provided. Exiting."
     exit 0
 fi
 
-echo "============================================"
-echo "Searching with ${#PATTERNS[@]} pattern(s):"
-for pattern in "${PATTERNS[@]}"; do
-    echo "  - '$pattern'"
+# Collect negative search patterns from user
+echo "Now enter negative search patterns to exclude processes."
+echo "Processes matching any negative pattern will be filtered out."
+echo "Type 'done' when you're finished adding patterns."
+echo ""
+
+while true; do
+    read -p "Enter negative search pattern (or 'done' to finish): " pattern
+    
+    if [ "$pattern" = "done" ]; then
+        break
+    fi
+    
+    if [ -n "$pattern" ]; then
+        NEGATIVE_PATTERNS+=("$pattern")
+        echo "  ✓ Added negative pattern: '$pattern'"
+    fi
 done
+
+echo ""
+
+echo "============================================"
+echo "Searching with ${#POSITIVE_PATTERNS[@]} positive pattern(s):"
+for pattern in "${POSITIVE_PATTERNS[@]}"; do
+    echo "  + '$pattern'"
+done
+if [ ${#NEGATIVE_PATTERNS[@]} -gt 0 ]; then
+    echo "Excluding ${#NEGATIVE_PATTERNS[@]} negative pattern(s):"
+    for pattern in "${NEGATIVE_PATTERNS[@]}"; do
+        echo "  - '$pattern'"
+    done
+fi
 echo "============================================"
 echo ""
 
-# Build grep command with all patterns
+# Build grep command with positive and negative patterns
 GREP_CMD="ps aux"
-for pattern in "${PATTERNS[@]}"; do
+for pattern in "${POSITIVE_PATTERNS[@]}"; do
     GREP_CMD="$GREP_CMD | grep '$pattern'"
+done
+for pattern in "${NEGATIVE_PATTERNS[@]}"; do
+    GREP_CMD="$GREP_CMD | grep -v '$pattern'"
 done
 GREP_CMD="$GREP_CMD | grep -v grep"
 

@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(3 0 1 2 3 4 5 6 7 2 3 4 5 6 7)
+CUDA_DEVICES=(2 2 3 3 3 4 4 4 5 5 6 6 7 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -28,7 +28,7 @@ TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
 RESET_FREQUENCY=250000
 # Set REVIVE_EPOCH=0 to disable revive while still keeping periodic reset.
-REVIVE_EPOCH=10000
+REVIVE_EPOCH=0
 REVIVE_STRATEGY=threshold
 RESET_FREQUENCY_K="$((RESET_FREQUENCY / 1000))k"
 if (( REVIVE_EPOCH > 0 )); then
@@ -40,34 +40,58 @@ fi
 # ============= Settings Definition =============
 # Format: "task_type|seed"
 declare -a SETTINGS=(
+    # "no_reset|1000"
+    # "no_reset|2000"
+    # "no_reset|3000"
     # "no_reset|4000"
     # "no_reset|5000"
     # # "no_reset|6000"
     
-    # "reset_only_agent|4000"
-    # "reset_only_agent|5000"
-    # # "reset_only_agent|6000"
+    "reset_only_agent|1000"
+    "reset_only_agent|2000"
+    "reset_only_agent|3000"
+    "reset_only_agent|4000"
+    "reset_only_agent|5000"
+    # "reset_only_agent|6000"
 
-    # "reset_only_wm|4000"
-    # "reset_only_wm|5000"
-    # # "reset_only_wm|6000"
+    "reset_only_wm|1000"
+    "reset_only_wm|2000"
+    "reset_only_wm|3000"
+    "reset_only_wm|4000"
+    "reset_only_wm|5000"
+    # "reset_only_wm|6000"
 
-    # "reset_only_rssm|4000"
-    # "reset_only_rssm|5000"
-    # # "reset_only_rssm|6000"
+    "reset_only_rssm|1000"
+    "reset_only_rssm|2000"
+    "reset_only_rssm|3000"
+    "reset_only_rssm|4000"
+    "reset_only_rssm|5000"
+    # "reset_only_rssm|6000"
 
-    # "reset_all_heads|4000"
-    # "reset_all_heads|5000"
+    "reset_all_heads|1000"
+    "reset_all_heads|2000"
+    "reset_all_heads|3000"
+    "reset_all_heads|4000"
+    "reset_all_heads|5000"
     # "reset_all_heads|6000"
 
-    # "reset_agent_heads|4000"
-    # "reset_agent_heads|5000"
+    "reset_agent_heads|1000"
+    "reset_agent_heads|2000"
+    "reset_agent_heads|3000"
+    "reset_agent_heads|4000"
+    "reset_agent_heads|5000"
     # "reset_agent_heads|6000"
 
+    "reset_wm_heads|1000"
+    "reset_wm_heads|2000"
+    "reset_wm_heads|3000"
     "reset_wm_heads|4000"
-    # "reset_wm_heads|5000"
+    "reset_wm_heads|5000"
     # "reset_wm_heads|6000"
 
+    # "reset_all|1000"
+    # "reset_all|2000"
+    # "reset_all|3000"
     # "reset_all|4000"
     # "reset_all|5000"
     # "reset_all|6000"

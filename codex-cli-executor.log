@@ -22,3 +22,6 @@
 [2026-06-01 23:10:00 HKT] Inspected launcher and config; now locating runtime reset/revive implementation to verify revive_epoch=0 semantics.
 [2026-06-01 23:13:00 HKT] Patched launcher scripts to make revive_epoch=0 explicit in log tags/startup output while preserving existing revive behavior. Running bash -n and re-checking continual_train reset/revive semantics.
 [2026-06-01 23:14:00 HKT] Validation passed: bash -n succeeded for both launcher scripts. Confirmed continual_train already skips revive when revive_epoch<=0 and reset_all resets both wm+agent before env switch at the task boundary.
+[2026-06-03 00:00:00 HKT] Task: update auto_scripts/manage_process.sh to add negative selection patterns after positive selection patterns, so matched processes must include positives and exclude negatives.
+[2026-06-03 00:00:00 HKT] Implemented interactive negative-pattern collection and updated process filtering to require all positive patterns while excluding any negative-pattern matches. Validation next: bash syntax check and mocked process-list behavior.
+[2026-06-03 00:00:00 HKT] Validation passed: bash -n succeeded. Mocked ps output confirmed only processes containing all positive patterns and none of the negative patterns are listed; kill step was intentionally cancelled during the check.
