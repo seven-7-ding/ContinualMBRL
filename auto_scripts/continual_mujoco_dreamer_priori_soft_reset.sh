@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(2 2 3 3 3 4 4 4 5 5 6 6 7 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
+CUDA_DEVICES=(0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -26,7 +26,7 @@ BASE_LOGDIR_ROOT="logdir"
 # Training configuration
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
-RESET_FREQUENCY=250000
+RESET_FREQUENCY=50000
 RESET_MECHANISM="sandp"  # Options: hard, sandp, merge
 RESET_ALPHA=0.8
 

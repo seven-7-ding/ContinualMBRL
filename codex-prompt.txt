@@ -16,3 +16,5 @@
     1. 最大限度保持原先的执行逻辑
     2. 启动的进程中，让我可以**分别设置**reset的mechanism，以及reset的部位。当然，必要的其他超参数（包括frequency，task等等等等）也要让我可以自己设置。
     3. 要考虑的部位包括上述5种新的部位，以及no_reset。
+
+codex resume 019e9132-588a-7973-ad4f-02aad8ab6aad
