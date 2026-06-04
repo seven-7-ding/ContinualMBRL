@@ -1,0 +1,18 @@
+帮我修改这里的代码：
+【1】我需要实现的是两种新的reset方式：sandp，以及merge。每一种方式都分别有五种reset部分的选项：agent head, wm head, all head, only rssm, all。
+【2】五种reset部位的选项分别对应了：
+    1. agent head: 原先的only_agent_heads，但是要reset整个head，而不是最后的几层
+    2. wm head: 原先的only_wm_heads，但是要reset整个head，而不是最后的几层
+    3. all head：原先的all_heads，但是要reset整个head，而不是最后的几层，即所有的predictive heads
+    4. only rssm: 原先的only_rssm，即整个dynamics模型
+    5. all: 原先的reset_all，即整个系统
+【3】sandp是shrink and perturb的缩写，即设置一个缩放比a。新的权重w设置为w=w*a+(1-a)*\epsilon，其中\epsilon是高斯噪声。
+【4】merge方法，则设置一个缩放比a。新的权重w为w=w*a+(1-a)*w0.其中w0是整个系统在最一开始初始化时的权重值。这一措施即将现在的模型与最一开始的模型进行soft 融合。
+【5】完成了上述的soft reset之后，还要将对应参数的optimizer进行reset，形式和原先的一致。
+【6】添加revive机制（和原先的方法一致），但是默认设置revive的epoch为0（即不进行revive）。
+【7】清除除了完成上述要求之外的所有无关文件和中间产物；原先代码中存在的与上述无关的代码也一并清洗一下，使得代码尽量简洁易懂。
+【8】进行必要的debug和程序可行性实验（至少要看看能不能按照要求继续reset）。你可以在cuda3-7上进行实验，但是切记不要妨碍正在运行的进程（特别是，不要让程序占用的cuda内存太大，进而影响正在运行进程）。
+【9】最后，在/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/continual_mujoco_dreamer_priori_soft_reset.sh中进行修改，使得这个sh脚本
+    1. 最大限度保持原先的执行逻辑
+    2. 启动的进程中，让我可以**分别设置**reset的mechanism，以及reset的部位。当然，必要的其他超参数（包括frequency，task等等等等）也要让我可以自己设置。
+    3. 要考虑的部位包括上述5种新的部位，以及no_reset。
