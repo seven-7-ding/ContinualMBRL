@@ -163,6 +163,7 @@ class Agent(embodied.Agent):
     self.pending_outs = None
     self.pending_mets = None
     self.pending_sync = None
+    self.reset_counter = 0
 
     if self.jaxcfg.enable_policy:
       policy_params = {
@@ -182,6 +183,8 @@ class Agent(embodied.Agent):
 
     self._ckpt_groups = internal.grouped_ckpt_fns(
         self.params, self.jaxcfg.ckpt_chunksize)
+    self.initial_params_host = {
+        k: v for k, v in self.save()['params'].items() if not k.startswith('opt/')}
     if self.jaxcfg.precompile:
       elements.print('Compiling train and report...', color='yellow')
       with self.train_mesh:
@@ -417,15 +420,12 @@ class Agent(embodied.Agent):
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
 
-  def reset_params(self, mode='all'):
-    """Reinitialise selected network parameters from scratch.
+  def reset_params(self, mode='all', mechanism='hard', alpha=0.5):
+    """Reset selected parameters and matching optimiser state.
 
-    Called by continual runs when a reset is triggered. ``mode='all'``
-    preserves the legacy full reset behavior. ``mode='wm'`` resets the
-    Dreamer world model (encoder, dynamics, decoder, reward, continuation)
-    and ``mode='agent'`` resets the behavior/value side while keeping the
-    world model intact.
-    For partial resets, optimiser states are also reset.
+    ``mechanism='hard'`` uses fresh initialization.
+    ``mechanism='sandp'`` blends with a newly re-initialized subnet.
+    ``mechanism='merge'`` interpolates with the initial model weights.
     """
     aliases = {
         True: 'all',
@@ -436,20 +436,40 @@ class Agent(embodied.Agent):
         'worldmodel': 'wm',
         'reset_only_agent': 'agent',
         'reset_only_rssm': 'rssm',
+        'only_rssm': 'rssm',
         'rssm': 'rssm',
-        'reset_all_heads': 'all_heads',
-        'all_heads': 'all_heads',
-        'reset_only_agent_heads': 'agent_heads',
-        'reset_agent_heads': 'agent_heads',
-        'agent_heads': 'agent_heads',
-        'reset_only_wm_heads': 'wm_heads',
-        'reset_wm_heads': 'wm_heads',
-        'wm_heads': 'wm_heads',
+        'reset_all_heads': 'all_head',
+        'all_heads': 'all_head',
+        'all_head': 'all_head',
+        'reset_only_agent_heads': 'agent_head',
+        'reset_agent_heads': 'agent_head',
+        'agent_heads': 'agent_head',
+        'agent_head': 'agent_head',
+        'reset_only_wm_heads': 'wm_head',
+        'reset_wm_heads': 'wm_head',
+        'wm_heads': 'wm_head',
+        'wm_head': 'wm_head',
     }
     mode = aliases.get(mode, mode)
+    mechanism = {
+        None: 'hard',
+        False: 'hard',
+        'false': 'hard',
+        'none': 'hard',
+        'hard': 'hard',
+        'reset': 'hard',
+        'sandp': 'sandp',
+        'shrink_and_perturb': 'sandp',
+        'merge': 'merge',
+    }.get(mechanism, mechanism)
     if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'all_heads', 'agent_heads', 'wm_heads'):
+        'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head'):
       raise ValueError(f'Unknown reset mode: {mode}')
+    if mechanism not in ('hard', 'sandp', 'merge'):
+      raise ValueError(f'Unknown reset mechanism: {mechanism}')
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+      raise ValueError(f'Reset alpha must be in [0, 1], got {alpha}')
 
     # nj.Tree caches its treedef after the first call to read()/write().
     # On a second call to _init_params(), the context starts without
@@ -462,9 +482,13 @@ class Agent(embodied.Agent):
         if hasattr(sub, 'treedef'):
           sub.treedef = None
 
+    init_seed = None
+    if mechanism == 'sandp':
+      init_seed = self._next_reset_seed()
+
     # Produce a fresh set of parameters with identical sharding.
     with self.train_mesh:
-      new_params, _ = self._init_params()
+      new_params, _ = self._init_params(seed=init_seed)
 
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
@@ -480,25 +504,32 @@ class Agent(embodied.Agent):
         with self.n_actions.lock:
           self.n_actions.value = 0
 
-      if mode == 'all':
-        # Swap parameters (delete old to free device memory first).
-        jax.tree.map(lambda x: x.delete(), self.params)
-        self.params = new_params
-      else:
-        matched_param_keys = {
-            k for k in self.params
-            if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
-        reset_keys = [
-            k for k in self.params
-            if k in new_params and (
-                k in matched_param_keys or
-                self._opt_state_matches_param_reset(k, matched_param_keys))]
-        if not reset_keys:
-          raise ValueError(f'No parameters matched reset mode: {mode}')
-        old_params = {k: self.params[k] for k in reset_keys}
-        jax.tree.map(lambda x: x.delete(), old_params)
-        self.params.update({k: new_params[k] for k in reset_keys})
-        unused = {k: v for k, v in new_params.items() if k not in reset_keys}
+      matched_param_keys = {
+          k for k in self.params
+          if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
+      reset_keys = [
+          k for k in self.params
+          if k in new_params and (
+              k in matched_param_keys or
+              self._opt_state_matches_param_reset(k, matched_param_keys))]
+      if not reset_keys:
+        raise ValueError(f'No parameters matched reset mode: {mode}')
+
+      updated = {}
+      for index, key in enumerate(sorted(matched_param_keys)):
+        if mechanism == 'hard':
+          updated[key] = new_params[key]
+        else:
+          updated[key] = self._soft_reset_param(
+              key, self.params[key], new_params[key], mechanism, alpha, index)
+      for key in reset_keys:
+        if key.startswith('opt/'):
+          updated[key] = new_params[key]
+
+      replaced = {k: self.params[k] for k in reset_keys}
+      self.params.update(updated)
+      jax.tree.map(lambda x: x.delete(), replaced)
+      unused = {k: v for k, v in new_params.items() if k not in reset_keys}
 
       if self.jaxcfg.enable_policy:
         jax.tree.map(lambda x: x.delete(), self.policy_params)
@@ -519,6 +550,7 @@ class Agent(embodied.Agent):
           self.pending_sync = None
       if unused:
         jax.tree.map(lambda x: x.delete(), unused)
+      self.reset_counter += 1
 
   def _canonical_train_mode(self, mode):
     aliases = {
@@ -533,25 +565,31 @@ class Agent(embodied.Agent):
         'worldmodel': 'wm',
         'reset_only_wm': 'wm',
         'reset_only_rssm': 'rssm',
+        'only_rssm': 'rssm',
         'rssm': 'rssm',
-        'reset_wm_heads': 'wm_heads',
-        'reset_only_wm_heads': 'wm_heads',
-        'wm_heads': 'wm_heads',
+        'reset_wm_heads': 'wm_head',
+        'reset_only_wm_heads': 'wm_head',
+        'wm_heads': 'wm_head',
+        'wm_head': 'wm_head',
         'agent': 'agent',
         'reset_only_agent': 'agent',
-        'reset_agent_heads': 'agent_heads',
-        'reset_only_agent_heads': 'agent_heads',
-        'agent_heads': 'agent_heads',
-        'reset_all_heads': 'all_heads',
-        'all_heads': 'all_heads',
+        'reset_agent_heads': 'agent_head',
+        'reset_only_agent_heads': 'agent_head',
+        'agent_heads': 'agent_head',
+        'agent_head': 'agent_head',
+        'reset_all_heads': 'all_head',
+        'all_heads': 'all_head',
+        'all_head': 'all_head',
     }
     mode = aliases.get(mode, mode)
     if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'wm_heads', 'agent_heads', 'all_heads'):
+        'all', 'wm', 'agent', 'rssm', 'wm_head', 'agent_head', 'all_head'):
       raise ValueError(f'Unknown train mode: {mode}')
     return mode
 
   def _reset_key_matches(self, key, mode):
+    if mode == 'all':
+      return True
     if mode == 'wm':
       return self._matches_modules(key, ('enc', 'dyn', 'dec', 'rew', 'con'))
     if mode == 'agent':
@@ -561,14 +599,13 @@ class Agent(embodied.Agent):
            'advnorm'))
     if mode == 'rssm':
       return self._matches_modules(key, ('dyn',))
-    if mode == 'all_heads':
-      return (
-          self._matches_agent_head_tail(key) or
-          self._matches_wm_head_tail(key))
-    if mode == 'agent_heads':
-      return self._matches_agent_head_tail(key)
-    if mode == 'wm_heads':
-      return self._matches_wm_head_tail(key)
+    if mode == 'all_head':
+      return self._matches_modules(
+          key, ('dec', 'rew', 'con', 'pol', 'val', 'slowval'))
+    if mode == 'agent_head':
+      return self._matches_modules(key, ('pol', 'val', 'slowval'))
+    if mode == 'wm_head':
+      return self._matches_modules(key, ('dec', 'rew', 'con'))
     raise ValueError(f'Unknown reset key match mode: {mode}')
 
   def _matches_modules(self, key, modules):
@@ -581,49 +618,28 @@ class Agent(embodied.Agent):
       return False
     return any(key.endswith(f'/{param_key}') for param_key in param_keys)
 
-  def _matches_layer_prefix(self, key, prefix):
-    return key == prefix or key.startswith(f'{prefix}/')
+  def _soft_reset_param(
+      self, key, current_value, fresh_value, mechanism, alpha, reset_index):
+    if mechanism == 'hard':
+      return fresh_value
 
-  def _head_tail_prefixes(self, module, layers):
-    prefixes = [f'{module}/head']
-    if layers > 0:
-      last = layers - 1
-      prefixes += [f'{module}/mlp/linear{last}', f'{module}/mlp/norm{last}']
-    return tuple(prefixes)
-
-  def _decoder_tail_prefixes(self):
-    prefixes = []
-    vec_layers = getattr(self.model.dec, 'layers', 0)
-    if vec_layers > 0:
-      last = vec_layers - 1
-      prefixes += [f'dec/mlp/linear{last}', f'dec/mlp/norm{last}', 'dec/vec']
-    depths = getattr(self.model.dec, 'depths', ())
-    if depths:
-      prefixes += ['dec/imgout']
-      for i in reversed(range(len(depths) - 1)):
-        prefixes += [f'dec/conv{i}', f'dec/conv{i}norm']
-      if getattr(self.model.dec, 'bspace', 0):
-        prefixes += ['dec/spnorm', 'dec/sp0', 'dec/sp1', 'dec/sp1norm', 'dec/sp2']
-      else:
-        prefixes += ['dec/space', 'dec/spacenorm']
-    return tuple(prefixes)
-
-  def _matches_agent_head_tail(self, key):
-    prefixes = (
-        *self._head_tail_prefixes('pol', getattr(self.model.pol, 'layers', 0)),
-        *self._head_tail_prefixes('val', getattr(self.model.val, 'layers', 0)),
-        *self._head_tail_prefixes(
-            'slowval', getattr(self.model.slowval.model, 'layers', 0)),
-    )
-    return any(self._matches_layer_prefix(key, prefix) for prefix in prefixes)
-
-  def _matches_wm_head_tail(self, key):
-    prefixes = (
-        *self._head_tail_prefixes('rew', getattr(self.model.rew, 'layers', 0)),
-        *self._head_tail_prefixes('con', getattr(self.model.con, 'layers', 0)),
-        *self._decoder_tail_prefixes(),
-    )
-    return any(self._matches_layer_prefix(key, prefix) for prefix in prefixes)
+    if jnp.issubdtype(current_value.dtype, jnp.floating):
+      blend = jnp.asarray(alpha, current_value.dtype)
+      keep = jnp.asarray(1.0 - alpha, current_value.dtype)
+      if mechanism == 'sandp':
+        fresh_value = fresh_value.astype(current_value.dtype)
+        return current_value * blend + fresh_value * keep
+      if mechanism == 'merge':
+        initial = self.initial_params_host[key]
+        initial = internal.device_put(initial, current_value.sharding)
+        initial = initial.astype(current_value.dtype)
+        return current_value * blend + initial * keep
+    if mechanism == 'sandp':
+      return fresh_value
+    if mechanism == 'merge':
+      initial = self.initial_params_host[key]
+      return internal.device_put(initial, current_value.sharding)
+    raise ValueError(f'Unsupported reset mechanism: {mechanism}')
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)
@@ -636,7 +652,13 @@ class Agent(embodied.Agent):
     seeds = rng.integers(0, np.iinfo(np.uint32).max, (2,), np.uint32)
     return internal.device_put(seeds, sharding)
 
-  def _init_params(self):
+  def _next_reset_seed(self):
+    seed = np.random.SeedSequence([
+        self.config.seed, int(self.n_updates), int(self.reset_counter), 1,
+    ]).generate_state(1, np.uint32)[0]
+    return int(seed)
+
+  def _init_params(self, seed=None):
     B = min(self.config.batch_size, len(self.jaxcfg.train_devices))
     GB = B * jax.process_count()
     T = self.config.batch_length
@@ -644,8 +666,10 @@ class Agent(embodied.Agent):
     tm, ts = self.train_mirrored, self.train_sharded
     us = self.jaxcfg.use_shardmap
 
+    if seed is None:
+      seed = self.config.seed
     with jax._src.config.explicit_device_get_scope():
-      seed = jax.device_put(np.array([self.config.seed, 0], np.uint32), tm)
+      seed = jax.device_put(np.array([seed, 0], np.uint32), tm)
     data = internal.device_put(self._zeros(self.spaces, (B, T + C)), ts)
     pr, ar = self.partition_rules
 

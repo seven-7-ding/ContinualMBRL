@@ -79,23 +79,30 @@ defaults:
     # Periodic model reset for continual runs.
     # reset_frequency is independent from agent.redo.frequency.
     reset_frequency: 1e5
+    # reset_mechanism:
+    #   hard   -> replace selected parameters by fresh initialization
+    #   sandp  -> blend with a newly re-initialized subnet,
+    #              w = a * w + (1 - a) * w_fresh
+    #   merge  -> soft merge with initial weights, w = a * w + (1 - a) * w0
+    reset_mechanism: hard
+    # reset_target:
+    #   no_reset
+    #   agent_head
+    #   wm_head
+    #   all_head
+    #   only_rssm
+    #   all
+    reset_target: no_reset
+    reset_alpha: 0.5
     # revive_strategy:
     #   fixed      -> always run exactly revive_epoch steps after reset
     #   threshold  -> stop when current loss <= last_loss * revive_threshold,
     #                 or when revive_epoch max steps are reached
     revive_strategy: fixed
-    revive_epoch: 100
+    revive_epoch: 0
     last_loss_num: 10
     revive_threshold: 1.0
-    # reset_mode:
-    #   no_reset
-    #   reset_only_agent
-    #   reset_only_wm
-    #   reset_only_rssm
-    #   reset_all_heads
-    #   reset_agent_heads
-    #   reset_wm_heads
-    #   reset_all
+    # Legacy compatibility alias. Prefer reset_target/reset_mechanism.
     reset_mode: no_reset
 
   jax:

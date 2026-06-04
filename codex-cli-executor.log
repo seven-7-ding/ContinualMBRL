@@ -1,0 +1,9 @@
+2026-06-04 14:24:46 HKT | task: implement soft reset mechanisms (sandp, merge), new reset targets, revive default 0, script refactor, validation.
+2026-06-04 14:24:46 HKT | actions: inspected repository layout, checked AGENTS.md scope, located reset logic in embodied/jax/agent.py and embodied/run/continual_train.py, located launcher script.
+2026-06-04 14:40:04 HKT | actions: added reset_mechanism/reset_target/reset_alpha config, refactored continual reset handling, rewrote launcher script, cleaned unrelated debug files.
+2026-06-04 14:40:04 HKT | validation: `bash -n auto_scripts/continual_mujoco_dreamer_priori_soft_reset.sh` passed; `python -m compileall dreamerv3 embodied` passed; fake-agent unit validation passed for repeated `sandp`/`merge` resets across `agent_head`, `wm_head`, `all_head`, `rssm`, `all`.
+2026-06-04 14:40:04 HKT | notes: skipped GPU runtime experiments because cuda:0-7 were already heavily occupied; avoided disturbing existing long-running jobs. Full Dreamer CPU initialization was too slow for a practical end-to-end smoke test within this turn.
+2026-06-04 14:47:35 HKT | actions: updated soft-reset launcher hyperparameter section to match the style of `ContinualMBRL-reset-partial/auto_scripts/2-continual_mujoco_dreamer_priori_reset-partial.sh`, using a fixed configuration block and a `SETTINGS` array of `reset_target|seed`.
+2026-06-04 14:47:35 HKT | validation: `bash -n auto_scripts/continual_mujoco_dreamer_priori_soft_reset.sh` passed after the style refactor.
+2026-06-04 15:04:20 HKT | actions: changed `sandp` from parameter-wise Gaussian noise injection to subnet-level soft reset using a newly re-initialized parameter set, blended as `a * current + (1 - a) * fresh_init`.
+2026-06-04 15:04:20 HKT | validation: `python -m py_compile embodied/jax/agent.py` passed; fake-agent validation passed for `sandp` blend semantics and repeated resets across `agent_head`, `wm_head`, `all_head`, `rssm`, `all`.
