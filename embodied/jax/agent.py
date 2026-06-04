@@ -624,8 +624,9 @@ class Agent(embodied.Agent):
       return fresh_value
 
     if jnp.issubdtype(current_value.dtype, jnp.floating):
-      blend = jnp.asarray(alpha, current_value.dtype)
-      keep = jnp.asarray(1.0 - alpha, current_value.dtype)
+      del reset_index
+      blend = self._sharded_scalar(alpha, current_value)
+      keep = self._sharded_scalar(1.0 - alpha, current_value)
       if mechanism == 'sandp':
         fresh_value = fresh_value.astype(current_value.dtype)
         return current_value * blend + fresh_value * keep
@@ -640,6 +641,10 @@ class Agent(embodied.Agent):
       initial = self.initial_params_host[key]
       return internal.device_put(initial, current_value.sharding)
     raise ValueError(f'Unsupported reset mechanism: {mechanism}')
+
+  def _sharded_scalar(self, value, ref):
+    scalar = np.asarray(value, ref.dtype)
+    return internal.device_put(scalar, ref.sharding)
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)
