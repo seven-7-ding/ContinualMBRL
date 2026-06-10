@@ -449,6 +449,12 @@ class Agent(embodied.Agent):
         'reset_wm_heads': 'wm_head',
         'wm_heads': 'wm_head',
         'wm_head': 'wm_head',
+        'encoder_only': 'encoder_only',
+        'reset_only_encoder': 'encoder_only',
+        'ab_encoder': 'ab_encoder',
+        'ab_rssm': 'ab_rssm',
+        'ab_agent_head': 'ab_agent_head',
+        'ab_wm_head': 'ab_wm_head',
     }
     mode = aliases.get(mode, mode)
     mechanism = {
@@ -461,11 +467,14 @@ class Agent(embodied.Agent):
         'sandp': 'sandp',
         'shrink_and_perturb': 'sandp',
         'merge': 'merge',
+        'opt_only': 'opt_only',
+        'optimizer_only': 'opt_only',
     }.get(mechanism, mechanism)
     if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head'):
+        'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head',
+        'encoder_only', 'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown reset mode: {mode}')
-    if mechanism not in ('hard', 'sandp', 'merge'):
+    if mechanism not in ('hard', 'sandp', 'merge', 'opt_only'):
       raise ValueError(f'Unknown reset mechanism: {mechanism}')
     alpha = float(alpha)
     if not 0.0 <= alpha <= 1.0:
@@ -495,28 +504,21 @@ class Agent(embodied.Agent):
       stack.enter_context(self.policy_lock)
       unused = {}
 
-      if mode == 'all':
-        # Reset training counters so scheduler / ReDo start fresh.
-        with self.n_updates.lock:
-          self.n_updates.value = 0
-        with self.n_batches.lock:
-          self.n_batches.value = 0
-        with self.n_actions.lock:
-          self.n_actions.value = 0
-
       matched_param_keys = {
           k for k in self.params
           if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
+      param_reset_keys = (
+          matched_param_keys if mechanism != 'opt_only' else set())
       reset_keys = [
           k for k in self.params
           if k in new_params and (
-              k in matched_param_keys or
+              k in param_reset_keys or
               self._opt_state_matches_param_reset(k, matched_param_keys))]
       if not reset_keys:
         raise ValueError(f'No parameters matched reset mode: {mode}')
 
       updated = {}
-      for index, key in enumerate(sorted(matched_param_keys)):
+      for index, key in enumerate(sorted(param_reset_keys)):
         if mechanism == 'hard':
           updated[key] = new_params[key]
         else:
@@ -571,6 +573,8 @@ class Agent(embodied.Agent):
         'reset_only_wm_heads': 'wm_head',
         'wm_heads': 'wm_head',
         'wm_head': 'wm_head',
+        'encoder_only': 'encoder_only',
+        'reset_only_encoder': 'encoder_only',
         'agent': 'agent',
         'reset_only_agent': 'agent',
         'reset_agent_heads': 'agent_head',
@@ -580,10 +584,15 @@ class Agent(embodied.Agent):
         'reset_all_heads': 'all_head',
         'all_heads': 'all_head',
         'all_head': 'all_head',
+        'ab_encoder': 'ab_encoder',
+        'ab_rssm': 'ab_rssm',
+        'ab_agent_head': 'ab_agent_head',
+        'ab_wm_head': 'ab_wm_head',
     }
     mode = aliases.get(mode, mode)
     if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'wm_head', 'agent_head', 'all_head'):
+        'all', 'wm', 'agent', 'rssm', 'wm_head', 'agent_head', 'all_head',
+        'encoder_only', 'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown train mode: {mode}')
     return mode
 
@@ -603,9 +612,19 @@ class Agent(embodied.Agent):
       return self._matches_modules(
           key, ('dec', 'rew', 'con', 'pol', 'val', 'slowval'))
     if mode == 'agent_head':
-      return self._matches_modules(key, ('pol', 'val', 'slowval'))
+      return self._matches_modules(key, ('pol', 'val', 'slowval', 'retnorm', 'valnorm', 'advnorm'))
     if mode == 'wm_head':
       return self._matches_modules(key, ('dec', 'rew', 'con'))
+    if mode == 'encoder_only':
+      return self._matches_modules(key, ('enc',))
+    if mode == 'ab_encoder':
+      return not self._matches_modules(key, ('enc',))
+    if mode == 'ab_rssm':
+      return not self._matches_modules(key, ('dyn',))
+    if mode == 'ab_agent_head':
+      return not self._matches_modules(key, ('pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm', 'advnorm'))
+    if mode == 'ab_wm_head':
+      return not self._matches_modules(key, ('dec', 'rew', 'con'))
     raise ValueError(f'Unknown reset key match mode: {mode}')
 
   def _matches_modules(self, key, modules):

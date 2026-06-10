@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
+CUDA_DEVICES=(3 4 5)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
@@ -27,7 +27,7 @@ BASE_LOGDIR_ROOT="logdir"
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
 RESET_FREQUENCY=50000
-RESET_MECHANISM="sandp"  # Options: hard, sandp, merge, opt_only
+RESET_MECHANISM="opt_only"  # Options: hard, sandp, merge
 RESET_ALPHA=0.8
 
 # Set REVIVE_EPOCH=0 to disable revive while still keeping periodic reset.
@@ -55,48 +55,11 @@ fi
 # ============= Settings Definition =============
 # Format: "reset_target|seed"
 declare -a SETTINGS=(
-    # "no_reset|1000"
-    # "no_reset|2000"
-    # "no_reset|3000"
-    # "no_reset|4000"
-    # "no_reset|5000"
-
-    "agent_head|1000"
-    "agent_head|2000"
-    "agent_head|3000"
-    "agent_head|4000"
-    "agent_head|5000"
-
-    "wm_head|1000"
-    "wm_head|2000"
-    "wm_head|3000"
-    "wm_head|4000"
-    "wm_head|5000"
-
-    "only_rssm|1000"
-    "only_rssm|2000"
-    "only_rssm|3000"
-    "only_rssm|4000"
-    "only_rssm|5000"
-
-    # "encoder_only|1000"
-
-    "all_head|1000"
-    "all_head|2000"
-    "all_head|3000"
-    "all_head|4000"
-    "all_head|5000"
-
     "all|1000"
     "all|2000"
     "all|3000"
-    "all|4000"
-    "all|5000"
-
-    # "ab_encoder|1000"
-    # "ab_rssm|1000"
-    # "ab_agent_head|1000"
-    # "ab_wm_head|1000"
+    # "all|4000"
+    # "all|5000"
 )
 
 # ============= Initialize =============
@@ -132,8 +95,8 @@ for setting_spec in "${SETTINGS[@]}"; do
 
     if [[ "$reset_target" == "no_reset" ]]; then
         reset_tag="no_reset"
-    elif [[ "$RESET_MECHANISM" == "hard" || "$RESET_MECHANISM" == "opt_only" ]]; then
-        reset_tag="${RESET_MECHANISM}_${reset_target}"
+    elif [[ "$RESET_MECHANISM" == "hard" ]]; then
+        reset_tag="hard_${reset_target}"
     else
         reset_tag="${RESET_MECHANISM}_${reset_target}_a${RESET_ALPHA_TAG}"
     fi

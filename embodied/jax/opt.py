@@ -81,6 +81,9 @@ class Optimizer(nj.Module):
     metrics['grad_rms'] = nets.rms(grads)
     metrics['update_rms'] = nets.rms(updates)
     metrics['param_rms'] = nets.rms([x.values for x in self.modules])
+    for module in self.modules:
+      metrics[f'{self._module_metric_name(module)}_param_rms'] = nets.rms(
+          module.values)
     metrics['param_count'] = jnp.array(list(counts.values()), f32).sum()
     metrics = {f'{self.name}/{k}': v for k, v in metrics.items()}
     return (metrics, aux) if has_aux else metrics
@@ -95,6 +98,9 @@ class Optimizer(nj.Module):
         f32(incr) * self.grad_scale.read() * 2 +
         f32(decr) * self.grad_scale.read() / 2, 1e-4, 1e5))
     return finite
+
+  def _module_metric_name(self, module):
+    return module.path.replace('/', '_')
 
   def _summarize_params(self, counts, depth):
     lines = []

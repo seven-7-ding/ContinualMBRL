@@ -53,9 +53,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         'sandp': 'sandp',
         'shrink_and_perturb': 'sandp',
         'merge': 'merge',
+        'opt_only': 'opt_only',
+        'optimizer_only': 'opt_only',
     }
     mechanism = aliases.get(mechanism, mechanism)
-    if mechanism not in ('hard', 'sandp', 'merge'):
+    if mechanism not in ('hard', 'sandp', 'merge', 'opt_only'):
       raise ValueError(f'Unknown reset_mechanism: {mechanism}')
     return mechanism
 
@@ -74,9 +76,15 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         'wm_heads': 'wm_head',
         'reset_wm_heads': 'wm_head',
         'reset_only_wm_heads': 'wm_head',
+        'encoder_only': 'encoder_only',
+        'reset_only_encoder': 'encoder_only',
         'all_head': 'all_head',
         'all_heads': 'all_head',
         'reset_all_heads': 'all_head',
+        'ab_encoder': 'ab_encoder',
+        'ab_rssm': 'ab_rssm',
+        'ab_agent_head': 'ab_agent_head',
+        'ab_wm_head': 'ab_wm_head',
         'only_rssm': 'rssm',
         'reset_only_rssm': 'rssm',
         'rssm': 'rssm',
@@ -95,7 +103,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     target = aliases.get(target, target)
     if target not in (
         'no_reset', 'agent_head', 'wm_head', 'all_head',
-        'rssm', 'all', 'agent', 'wm'):
+        'rssm', 'all', 'agent', 'wm', 'encoder_only',
+        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown reset_target: {target}')
     return target
 
@@ -189,11 +198,13 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       loss_windows['agent'][name].append(val)
 
   def loss_bucket(mode):
-    if mode in ('wm', 'rssm', 'wm_head'):
+    if mode in ('wm', 'rssm', 'wm_head', 'encoder_only'):
       return 'wm'
     if mode in ('agent', 'agent_head'):
       return 'agent'
-    if mode in ('all', 'all_head'):
+    if mode in (
+        'all', 'all_head',
+        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       return 'all'
     raise ValueError(f'Unknown loss bucket mode: {mode}')
 
@@ -392,6 +403,15 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
       revive('wm_head', revive_epoch, 'world model head revive', last_loss)
       return
+    if reset_target == 'encoder_only':
+      last_loss = get_last_loss('encoder_only')
+      agent.reset_params(
+          'encoder_only', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset encoder only at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive('encoder_only', revive_epoch, 'encoder revive', last_loss)
+      return
     if reset_target == 'all_head':
       last_loss = get_last_loss('all_head')
       agent.reset_params(
@@ -400,6 +420,47 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           f'Reset all heads at step {step.value} with mechanism='
           f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
       revive('all_head', revive_epoch, 'all head revive', last_loss)
+      return
+    if reset_target == 'ab_encoder':
+      last_loss = get_last_loss('ab_encoder')
+      agent.reset_params(
+          'ab_encoder', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset all except encoder at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive('ab_encoder', revive_epoch, 'all-but-encoder revive', last_loss)
+      return
+    if reset_target == 'ab_rssm':
+      last_loss = get_last_loss('ab_rssm')
+      agent.reset_params(
+          'ab_rssm', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset all except dynamics at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive('ab_rssm', revive_epoch, 'all-but-dynamics revive', last_loss)
+      return
+    if reset_target == 'ab_agent_head':
+      last_loss = get_last_loss('ab_agent_head')
+      agent.reset_params(
+          'ab_agent_head', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset all except agent heads at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive(
+          'ab_agent_head', revive_epoch, 'all-but-agent-head revive',
+          last_loss)
+      return
+    if reset_target == 'ab_wm_head':
+      last_loss = get_last_loss('ab_wm_head')
+      agent.reset_params(
+          'ab_wm_head', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset all except world model heads at step {step.value} with '
+          f'mechanism={reset_mechanism} alpha={reset_alpha}. '
+          f'last_loss={last_loss}')
+      revive(
+          'ab_wm_head', revive_epoch, 'all-but-world-model-head revive',
+          last_loss)
       return
     if reset_target == 'all':
       last_wm_loss = get_last_loss('wm')

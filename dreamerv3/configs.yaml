@@ -80,10 +80,12 @@ defaults:
     # reset_frequency is independent from agent.redo.frequency.
     reset_frequency: 1e5
     # reset_mechanism:
-    #   hard   -> replace selected parameters by fresh initialization
-    #   sandp  -> blend with a newly re-initialized subnet,
-    #              w = a * w + (1 - a) * w_fresh
-    #   merge  -> soft merge with initial weights, w = a * w + (1 - a) * w0
+    #   hard      -> replace selected parameters by fresh initialization
+    #   sandp     -> blend with a newly re-initialized subnet,
+    #                 w = a * w + (1 - a) * w_fresh
+    #   merge     -> soft merge with initial weights, w = a * w + (1 - a) * w0
+    #   opt_only  -> keep parameter values unchanged and reset only optimizer
+    #                 state for the selected parameter set
     reset_mechanism: hard
     # reset_target:
     #   no_reset
@@ -91,7 +93,12 @@ defaults:
     #   wm_head
     #   all_head
     #   only_rssm
+    #   encoder_only
     #   all
+    #   ab_encoder
+    #   ab_rssm
+    #   ab_agent_head
+    #   ab_wm_head
     reset_target: no_reset
     reset_alpha: 0.5
     # revive_strategy:
