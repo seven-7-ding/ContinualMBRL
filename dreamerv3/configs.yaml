@@ -83,6 +83,8 @@ defaults:
     #   hard      -> replace selected parameters by fresh initialization
     #   sandp     -> blend with a newly re-initialized subnet,
     #                 w = a * w + (1 - a) * w_fresh
+    #   sandp_wo_opt -> same parameter update as sandp, but keep optimizer
+    #                   state unchanged
     #   merge     -> soft merge with initial weights, w = a * w + (1 - a) * w0
     #   opt_only  -> keep parameter values unchanged and reset only optimizer
     #                 state for the selected parameter set

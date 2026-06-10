@@ -425,6 +425,7 @@ class Agent(embodied.Agent):
 
     ``mechanism='hard'`` uses fresh initialization.
     ``mechanism='sandp'`` blends with a newly re-initialized subnet.
+    ``mechanism='sandp_wo_opt'`` does the same but keeps optimiser state.
     ``mechanism='merge'`` interpolates with the initial model weights.
     """
     aliases = {
@@ -466,6 +467,8 @@ class Agent(embodied.Agent):
         'reset': 'hard',
         'sandp': 'sandp',
         'shrink_and_perturb': 'sandp',
+        'sandp_wo_opt': 'sandp_wo_opt',
+        'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
         'merge': 'merge',
         'opt_only': 'opt_only',
         'optimizer_only': 'opt_only',
@@ -474,7 +477,8 @@ class Agent(embodied.Agent):
         'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head',
         'encoder_only', 'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown reset mode: {mode}')
-    if mechanism not in ('hard', 'sandp', 'merge', 'opt_only'):
+    if mechanism not in (
+        'hard', 'sandp', 'sandp_wo_opt', 'merge', 'opt_only'):
       raise ValueError(f'Unknown reset mechanism: {mechanism}')
     alpha = float(alpha)
     if not 0.0 <= alpha <= 1.0:
@@ -492,7 +496,7 @@ class Agent(embodied.Agent):
           sub.treedef = None
 
     init_seed = None
-    if mechanism == 'sandp':
+    if mechanism in ('sandp', 'sandp_wo_opt'):
       init_seed = self._next_reset_seed()
 
     # Produce a fresh set of parameters with identical sharding.
@@ -513,7 +517,8 @@ class Agent(embodied.Agent):
           k for k in self.params
           if k in new_params and (
               k in param_reset_keys or
-              self._opt_state_matches_param_reset(k, matched_param_keys))]
+              (mechanism != 'sandp_wo_opt' and
+               self._opt_state_matches_param_reset(k, matched_param_keys)))]
       if not reset_keys:
         raise ValueError(f'No parameters matched reset mode: {mode}')
 
@@ -646,7 +651,7 @@ class Agent(embodied.Agent):
       del reset_index
       blend = self._sharded_scalar(alpha, current_value)
       keep = self._sharded_scalar(1.0 - alpha, current_value)
-      if mechanism == 'sandp':
+      if mechanism in ('sandp', 'sandp_wo_opt'):
         fresh_value = fresh_value.astype(current_value.dtype)
         return current_value * blend + fresh_value * keep
       if mechanism == 'merge':
@@ -654,7 +659,7 @@ class Agent(embodied.Agent):
         initial = internal.device_put(initial, current_value.sharding)
         initial = initial.astype(current_value.dtype)
         return current_value * blend + initial * keep
-    if mechanism == 'sandp':
+    if mechanism in ('sandp', 'sandp_wo_opt'):
       return fresh_value
     if mechanism == 'merge':
       initial = self.initial_params_host[key]
