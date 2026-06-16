@@ -79,6 +79,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         'wm_heads': 'wm_head',
         'reset_wm_heads': 'wm_head',
         'reset_only_wm_heads': 'wm_head',
+        'entire_agent': 'entire_agent',
+        'entire_wm': 'entire_wm',
         'encoder_only': 'encoder_only',
         'reset_only_encoder': 'encoder_only',
         'all_head': 'all_head',
@@ -106,7 +108,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     target = aliases.get(target, target)
     if target not in (
         'no_reset', 'agent_head', 'wm_head', 'all_head',
-        'rssm', 'all', 'agent', 'wm', 'encoder_only',
+        'rssm', 'all', 'agent', 'wm', 'entire_agent', 'entire_wm',
+        'encoder_only',
         'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown reset_target: {target}')
     return target
@@ -201,12 +204,12 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       loss_windows['agent'][name].append(val)
 
   def loss_bucket(mode):
-    if mode in ('wm', 'rssm', 'wm_head', 'encoder_only'):
+    if mode in ('wm', 'rssm', 'wm_head', 'entire_wm', 'encoder_only'):
       return 'wm'
     if mode in ('agent', 'agent_head'):
       return 'agent'
     if mode in (
-        'all', 'all_head',
+        'all', 'all_head', 'entire_agent',
         'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       return 'all'
     raise ValueError(f'Unknown loss bucket mode: {mode}')
@@ -405,6 +408,24 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           f'Reset world model heads at step {step.value} with mechanism='
           f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
       revive('wm_head', revive_epoch, 'world model head revive', last_loss)
+      return
+    if reset_target == 'entire_agent':
+      last_loss = get_last_loss('entire_agent')
+      agent.reset_params(
+          'entire_agent', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset entire agent at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive('entire_agent', revive_epoch, 'entire agent revive', last_loss)
+      return
+    if reset_target == 'entire_wm':
+      last_loss = get_last_loss('entire_wm')
+      agent.reset_params(
+          'entire_wm', mechanism=reset_mechanism, alpha=reset_alpha)
+      print(
+          f'Reset entire world model at step {step.value} with mechanism='
+          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
+      revive('entire_wm', revive_epoch, 'entire world model revive', last_loss)
       return
     if reset_target == 'encoder_only':
       last_loss = get_last_loss('encoder_only')

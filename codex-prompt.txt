@@ -26,5 +26,24 @@
 3. ab_agent_head，除了agent_head之外，全部reset
 4. ab_wm_head，除了wm的predictive heads之外，全部reset
 
+完成以下任务：
+【1】添加两种新的reset target：
+    1. entire_agent: 包括encoder, dynamics, 以及agent的各个head
+    2. entire_wm: 包括encoder，dynamics，以及world model的predictive head（reward，con，decoder等）
+【2】写一份脚本用于检查/home/jiale/MBRL/ContinualMBRL-soft-reset/embodied/envs/general_dmc_priori.py中的dmc priori task的obs和act维度，并将找到的维度信息写入一份json文件放到/home/jiale/MBRL/ContinualMBRL-soft-reset/embodied/envs/文件夹中。
+【3】帮我改写/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task.sh脚本，
+    1. 其中的task选用dog_walk，重复仅一次，task interval选用1e6。
+    2. 对于该task，选用对应的obs dim/act dim。
+    3. 使用sandp作为reset mechanism，reset target包括
+        no_reset
+        all
+        ab_wm_head
+        ab_agent_head
+        agent_head
+        wm_head
+        entire_agent
+        entire_wm
+【4】检查【3】中启动实验时，如果obs dim和act dim与task不对应时，会发生什么？
+
 
 codex resume 019e9132-588a-7973-ad4f-02aad8ab6aad

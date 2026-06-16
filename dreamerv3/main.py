@@ -273,10 +273,7 @@ def make_replay(config, folder, mode='train'):
 
 
 def make_env(config, index, switch_count=0, **overrides):
-  if "|" in config.task:
-    tasks = config.task.split('|')
-    task = tasks[switch_count % len(tasks)].strip()
-
+  def make_continual_env(task):
     continual_env = getattr(config, 'continual_env', 'vision')
     if continual_env == 'priori':
       from embodied.envs.general_dmc_priori import GeneralDMCPriori
@@ -295,12 +292,17 @@ def make_env(config, index, switch_count=0, **overrides):
       kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
     env = ctor(task, **kwargs)
     return wrap_env(env, config)
+
+  if "|" in config.task:
+    tasks = config.task.split('|')
+    task = tasks[switch_count % len(tasks)].strip()
+    return make_continual_env(task)
   else:
     suite, task = config.task.split('_', 1)
     if suite == 'memmaze':
       from embodied.envs import from_gym
       import memory_maze  # noqa
-    ctor = {
+    ctor_map = {
         'dummy': 'embodied.envs.dummy:Dummy',
         'gym': 'embodied.envs.from_gym:FromGym',
         'dm': 'embodied.envs.from_dmenv:FromDM',
@@ -317,7 +319,10 @@ def make_env(config, index, switch_count=0, **overrides):
         'bsuite': 'embodied.envs.bsuite:BSuite',
         'memmaze': lambda task, **kw: from_gym.FromGym(
             f'MemoryMaze-{task}-v0', **kw),
-    }[suite]
+    }
+    if suite not in ctor_map:
+      return make_continual_env(config.task)
+    ctor = ctor_map[suite]
   if isinstance(ctor, str):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)

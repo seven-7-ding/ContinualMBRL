@@ -450,6 +450,8 @@ class Agent(embodied.Agent):
         'reset_wm_heads': 'wm_head',
         'wm_heads': 'wm_head',
         'wm_head': 'wm_head',
+        'entire_agent': 'entire_agent',
+        'entire_wm': 'entire_wm',
         'encoder_only': 'encoder_only',
         'reset_only_encoder': 'encoder_only',
         'ab_encoder': 'ab_encoder',
@@ -475,7 +477,8 @@ class Agent(embodied.Agent):
     }.get(mechanism, mechanism)
     if mode not in (
         'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head',
-        'encoder_only', 'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
+        'entire_agent', 'entire_wm', 'encoder_only',
+        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown reset mode: {mode}')
     if mechanism not in (
         'hard', 'sandp', 'sandp_wo_opt', 'merge', 'opt_only'):
@@ -578,6 +581,8 @@ class Agent(embodied.Agent):
         'reset_only_wm_heads': 'wm_head',
         'wm_heads': 'wm_head',
         'wm_head': 'wm_head',
+        'entire_agent': 'entire_agent',
+        'entire_wm': 'entire_wm',
         'encoder_only': 'encoder_only',
         'reset_only_encoder': 'encoder_only',
         'agent': 'agent',
@@ -597,7 +602,8 @@ class Agent(embodied.Agent):
     mode = aliases.get(mode, mode)
     if mode not in (
         'all', 'wm', 'agent', 'rssm', 'wm_head', 'agent_head', 'all_head',
-        'encoder_only', 'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
+        'entire_agent', 'entire_wm', 'encoder_only',
+        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
       raise ValueError(f'Unknown train mode: {mode}')
     return mode
 
@@ -620,6 +626,13 @@ class Agent(embodied.Agent):
       return self._matches_modules(key, ('pol', 'val', 'slowval', 'retnorm', 'valnorm', 'advnorm'))
     if mode == 'wm_head':
       return self._matches_modules(key, ('dec', 'rew', 'con'))
+    if mode == 'entire_agent':
+      return self._matches_modules(
+          key,
+          ('enc', 'dyn', 'pol', 'val', 'slowval', 'slowval_count',
+           'retnorm', 'valnorm', 'advnorm'))
+    if mode == 'entire_wm':
+      return self._matches_modules(key, ('enc', 'dyn', 'dec', 'rew', 'con'))
     if mode == 'encoder_only':
       return self._matches_modules(key, ('enc',))
     if mode == 'ab_encoder':

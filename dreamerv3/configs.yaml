@@ -94,6 +94,8 @@ defaults:
     #   agent_head
     #   wm_head
     #   all_head
+    #   entire_agent
+    #   entire_wm
     #   only_rssm
     #   encoder_only
     #   all

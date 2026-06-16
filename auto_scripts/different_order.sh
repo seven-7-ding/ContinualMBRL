@@ -6,16 +6,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
+CUDA_DEVICES=(4)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
 
 # Task string (same for all settings)
-TASK_STRING="walker_run|hopper_hop|fish_swim"
+TASK_STRING="fish_swim|walker_run|hopper_hop"
 
 # Prefix for log directories
-PREFIX="continual_dreamer_soft_reset"
+PREFIX="continual_dreamer_soft_reset_order_2"
 
 # Model configuration
 MODEL_SIZE="size1m"  # Options: size0.5m, size1m, size12m, size50m, etc.
@@ -55,23 +55,21 @@ fi
 # ============= Settings Definition =============
 # Format: "reset_target|seed"
 declare -a SETTINGS=(
-    # "ab_encoder|1000"
-    # "ab_encoder|2000"
-    # "ab_encoder|3000"
-
-    # "ab_rssm|1000"
-    # "ab_rssm|2000"
-    # "ab_rssm|3000"
-
-    # "ab_agent_head|1000"
-    # "ab_agent_head|2000"
-    # "ab_agent_head|3000"
+    # "no_reset|1000"
+    # "no_reset|2000"
+    # "no_reset|3000"
 
     # "ab_wm_head|1000"
     # "ab_wm_head|2000"
     # "ab_wm_head|3000"
-    # "ab_wm_head|4000"
-    # "ab_wm_head|5000"
+
+    # "wm_head|1000"
+    # "wm_head|2000"
+    "wm_head|3000"
+    
+    # "all|1000"
+    # "all|2000"
+    # "all|3000"
 )
 
 # ============= Initialize =============
