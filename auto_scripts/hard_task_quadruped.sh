@@ -6,17 +6,60 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7)
+CUDA_DEVICES=(6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
 
-# Single hard task. `dreamerv3/main.py` now supports a single continual task.
-TASK_STRING="dog_walk"
+# Continual task string. When multiple tasks are listed, use the largest
+# probed obs/action dimensions across the successfully probed entries.
+TASK_STRING="quadruped_walk|quadruped_run|quadruped_escape"
 
-# Real dimensions probed from GeneralDMCPriori for dog_walk.
-DOG_WALK_OBS_DIM=223
-DOG_WALK_ACT_DIM=38
+# Read real dimensions for the selected tasks from the probed JSON summary.
+DIMS_JSON="$REPO_ROOT/embodied/envs/dmc_priori_dims.json"
+read -r TASK_OBS_DIM TASK_ACT_DIM < <(
+    python - "$DIMS_JSON" "$TASK_STRING" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+json_path = Path(sys.argv[1])
+task_names = [name.strip() for name in sys.argv[2].split("|") if name.strip()]
+
+payload = json.loads(json_path.read_text())
+task_entries = {item.get("task"): item for item in payload.get("tasks", [])}
+
+matched = []
+missing = []
+for task_name in task_names:
+    item = task_entries.get(task_name)
+    if item and item.get("status") == "ok":
+        matched.append(item)
+    else:
+        missing.append(task_name)
+
+if not matched:
+    raise SystemExit(
+        f"Did not find any successful dimension probes for tasks {task_names} in {json_path}")
+
+if missing:
+    print(
+        f"WARNING: Missing successful dimension probes for {missing}; "
+        f"using maxima from {[item['task'] for item in matched]}",
+        file=sys.stderr,
+    )
+
+print(
+    max(int(item["real_obs_dim"]) for item in matched),
+    max(int(item["real_act_dim"]) for item in matched),
+)
+PY
+)
+
+if [[ -z "$TASK_OBS_DIM" || -z "$TASK_ACT_DIM" ]]; then
+    echo "ERROR: Failed to load obs/action dims for task '$TASK_STRING' from $DIMS_JSON" >&2
+    exit 1
+fi
 
 # Prefix for log directories
 PREFIX="continual_dreamer_soft_reset"
@@ -29,7 +72,7 @@ BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=1024
-TASK_INTERVAL=2000000
+TASK_INTERVAL=1000000
 RESET_FREQUENCY=50000
 RESET_MECHANISM="sandp"
 RESET_ALPHA=0.8
@@ -60,21 +103,21 @@ fi
 # ============= Settings Definition =============
 # Format: "reset_target|seed"
 declare -a SETTINGS=(
-    "no_reset|1000"
-    "no_reset|2000"
-    "no_reset|3000"
+    # "no_reset|1000"
+    # "no_reset|2000"
+    # "no_reset|3000"
 
     "all|1000"
     "all|2000"
     "all|3000"
 
-    "ab_wm_head|1000"
-    "ab_wm_head|2000"
-    "ab_wm_head|3000"
+    # "ab_wm_head|1000"
+    # "ab_wm_head|2000"
+    # "ab_wm_head|3000"
 
-    "ab_agent_head|1000"
-    "ab_agent_head|2000"
-    "ab_agent_head|3000"
+    # "ab_agent_head|1000"
+    # "ab_agent_head|2000"
+    # "ab_agent_head|3000"
     
     # "agent_head|1000"
     # "agent_head|2000"
@@ -107,7 +150,7 @@ echo "Using GPUs: ${CUDA_DEVICES[@]}"
 echo "Max runs per GPU launched by this script: $MAX_RUNS_PER_GPU"
 echo "Model size: $MODEL_SIZE"
 echo "Task: $TASK_STRING"
-echo "Dog walk dims: obs=$DOG_WALK_OBS_DIM act=$DOG_WALK_ACT_DIM"
+echo "Task dims: obs=$TASK_OBS_DIM act=$TASK_ACT_DIM"
 echo "Reset mechanism: $RESET_MECHANISM"
 echo "Task interval: $TASK_INTERVAL"
 echo "Reset frequency: $RESET_FREQUENCY"
@@ -155,8 +198,8 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.reset_alpha "$RESET_ALPHA"
         --run.revive_epoch "$REVIVE_EPOCH"
         --run.revive_strategy "$REVIVE_STRATEGY"
-        --env.continual_dmc_priori.obs_dim "$DOG_WALK_OBS_DIM"
-        --env.continual_dmc_priori.task_action_space "$DOG_WALK_ACT_DIM"
+        --env.continual_dmc_priori.obs_dim "$TASK_OBS_DIM"
+        --env.continual_dmc_priori.task_action_space "$TASK_ACT_DIM"
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length "$AGENT_IMAG_LENGTH"
@@ -173,7 +216,7 @@ for setting_spec in "${SETTINGS[@]}"; do
 
     echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $reset_target seed $seed -> GPU $device_num"
     echo "   Task: $TASK_STRING"
-    echo "   Config: continual_dmc_priori $MODEL_SIZE obs_dim=$DOG_WALK_OBS_DIM act_dim=$DOG_WALK_ACT_DIM reset_mechanism=$RESET_MECHANISM reset_target=$reset_target reset_alpha=$RESET_ALPHA"
+    echo "   Config: continual_dmc_priori $MODEL_SIZE obs_dim=$TASK_OBS_DIM act_dim=$TASK_ACT_DIM reset_mechanism=$RESET_MECHANISM reset_target=$reset_target reset_alpha=$RESET_ALPHA"
     if [[ -n "$EXTRA_ARGS" ]]; then
         echo "   Extra args: $EXTRA_ARGS"
     fi
