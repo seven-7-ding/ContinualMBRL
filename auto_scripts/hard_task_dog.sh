@@ -6,13 +6,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3)
+CUDA_DEVICES=(2 3 0 1 2 3 4 5 6 7 0 1)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
 
 # Single hard task. `dreamerv3/main.py` now supports a single continual task.
-TASK_STRING="dog_walk"
+TASK_STRING="dog_stand|dog_walk|dog_trot"
 
 # Read real dimensions for the selected task from the probed JSON summary.
 DIMS_JSON="$REPO_ROOT/embodied/envs/dmc_priori_dims.json"
@@ -23,16 +23,35 @@ import sys
 from pathlib import Path
 
 json_path = Path(sys.argv[1])
-task_name = sys.argv[2]
+task_names = [name.strip() for name in sys.argv[2].split("|") if name.strip()]
 
 payload = json.loads(json_path.read_text())
-for item in payload.get("tasks", []):
-    if item.get("task") == task_name and item.get("status") == "ok":
-        print(item["real_obs_dim"], item["real_act_dim"])
-        break
-else:
+task_entries = {item.get("task"): item for item in payload.get("tasks", [])}
+
+matched = []
+missing = []
+for task_name in task_names:
+    item = task_entries.get(task_name)
+    if item and item.get("status") == "ok":
+        matched.append(item)
+    else:
+        missing.append(task_name)
+
+if not matched:
     raise SystemExit(
-        f"Did not find a successful dimension probe for task '{task_name}' in {json_path}")
+        f"Did not find any successful dimension probes for tasks {task_names} in {json_path}")
+
+if missing:
+    print(
+        f"WARNING: Missing successful dimension probes for {missing}; "
+        f"using maxima from {[item['task'] for item in matched]}",
+        file=sys.stderr,
+    )
+
+print(
+    max(int(item["real_obs_dim"]) for item in matched),
+    max(int(item["real_act_dim"]) for item in matched),
+)
 PY
 )
 
@@ -52,7 +71,7 @@ BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=1024
-TASK_INTERVAL=5000000
+TASK_INTERVAL=2000000
 RESET_FREQUENCY=50000
 RESET_MECHANISM="sandp"
 RESET_ALPHA=0.8
@@ -71,6 +90,10 @@ GRAD_LOG_ITEM="log+erank+srank"
 # Optional extra CLI args, for example:
 # EXTRA_ARGS="--run.log_every 5000 --batch_size 8"
 EXTRA_ARGS=""
+
+# Keep only this many completed replay chunks resident in RAM. The replay
+# sampling logic stays unchanged; old chunks are reloaded from disk on demand.
+REPLAY_CACHE_CHUNKS=512
 
 RESET_FREQUENCY_K="$((RESET_FREQUENCY / 1000))k"
 RESET_ALPHA_TAG="${RESET_ALPHA//./p}"
@@ -180,6 +203,7 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.revive_strategy "$REVIVE_STRATEGY"
         --env.continual_dmc_priori.obs_dim "$TASK_OBS_DIM"
         --env.continual_dmc_priori.task_action_space "$TASK_ACT_DIM"
+        --replay.cache_chunks "$REPLAY_CACHE_CHUNKS"
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length "$AGENT_IMAG_LENGTH"
@@ -196,7 +220,7 @@ for setting_spec in "${SETTINGS[@]}"; do
 
     echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $reset_target seed $seed -> GPU $device_num"
     echo "   Task: $TASK_STRING"
-    echo "   Config: continual_dmc_priori $MODEL_SIZE obs_dim=$TASK_OBS_DIM act_dim=$TASK_ACT_DIM reset_mechanism=$RESET_MECHANISM reset_target=$reset_target reset_alpha=$RESET_ALPHA"
+    echo "   Config: continual_dmc_priori $MODEL_SIZE obs_dim=$TASK_OBS_DIM act_dim=$TASK_ACT_DIM reset_mechanism=$RESET_MECHANISM reset_target=$reset_target reset_alpha=$RESET_ALPHA replay_cache_chunks=$REPLAY_CACHE_CHUNKS"
     if [[ -n "$EXTRA_ARGS" ]]; then
         echo "   Extra args: $EXTRA_ARGS"
     fi

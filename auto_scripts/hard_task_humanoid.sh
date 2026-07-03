@@ -12,7 +12,7 @@ CUDA_DEVICES=(0 1 2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1)
 MAX_RUNS_PER_GPU=1
 
 # Single hard task. `dreamerv3/main.py` now supports a single continual task.
-TASK_STRING="humanoid_walk"
+TASK_STRING="humanoid_stand|humanoid_run"
 
 # Read real dimensions for the selected task from the probed JSON summary.
 DIMS_JSON="$REPO_ROOT/embodied/envs/dmc_priori_dims.json"
@@ -23,16 +23,35 @@ import sys
 from pathlib import Path
 
 json_path = Path(sys.argv[1])
-task_name = sys.argv[2]
+task_names = [name.strip() for name in sys.argv[2].split("|") if name.strip()]
 
 payload = json.loads(json_path.read_text())
-for item in payload.get("tasks", []):
-    if item.get("task") == task_name and item.get("status") == "ok":
-        print(item["real_obs_dim"], item["real_act_dim"])
-        break
-else:
+task_entries = {item.get("task"): item for item in payload.get("tasks", [])}
+
+matched = []
+missing = []
+for task_name in task_names:
+    item = task_entries.get(task_name)
+    if item and item.get("status") == "ok":
+        matched.append(item)
+    else:
+        missing.append(task_name)
+
+if not matched:
     raise SystemExit(
-        f"Did not find a successful dimension probe for task '{task_name}' in {json_path}")
+        f"Did not find any successful dimension probes for tasks {task_names} in {json_path}")
+
+if missing:
+    print(
+        f"WARNING: Missing successful dimension probes for {missing}; "
+        f"using maxima from {[item['task'] for item in matched]}",
+        file=sys.stderr,
+    )
+
+print(
+    max(int(item["real_obs_dim"]) for item in matched),
+    max(int(item["real_act_dim"]) for item in matched),
+)
 PY
 )
 
@@ -52,7 +71,7 @@ BASE_LOGDIR_ROOT="logdir"
 
 # Training configuration
 TRAIN_RATIO=1024
-TASK_INTERVAL=5000000
+TASK_INTERVAL=3000000
 RESET_FREQUENCY=50000
 RESET_MECHANISM="sandp"
 RESET_ALPHA=0.8
@@ -83,13 +102,13 @@ fi
 # ============= Settings Definition =============
 # Format: "reset_target|seed"
 declare -a SETTINGS=(
-    "no_reset|1000"
-    "no_reset|2000"
-    "no_reset|3000"
+    # "no_reset|1000"
+    # "no_reset|2000"
+    # "no_reset|3000"
 
-    "all|1000"
-    "all|2000"
-    "all|3000"
+    # "all|1000"
+    # "all|2000"
+    # "all|3000"
 
     "ab_wm_head|1000"
     "ab_wm_head|2000"

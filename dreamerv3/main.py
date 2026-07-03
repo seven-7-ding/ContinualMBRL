@@ -225,11 +225,16 @@ def make_logger(config):
       name = items[2]
       wandb_dir = logdir + '/wandb'
       os.makedirs(wandb_dir, exist_ok=True)
-      outputs.append(elements.logger.WandBOutput(
-        name=name,
-        project=project,
-        group=group,
-        dir=wandb_dir,))
+      wandb_kwargs = dict(
+          name=name,
+          project=project,
+          group=group,
+          dir=wandb_dir)
+      if os.environ.get('WANDB_RUN_ID'):
+        wandb_kwargs['id'] = os.environ['WANDB_RUN_ID']
+      if os.environ.get('WANDB_RESUME'):
+        wandb_kwargs['resume'] = os.environ['WANDB_RESUME']
+      outputs.append(elements.logger.WandBOutput(**wandb_kwargs))
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
     else:
@@ -245,12 +250,13 @@ def make_replay(config, folder, mode='train'):
   length = consec * batlen + config.replay_context
   assert config.batch_size * length <= capacity
 
-  directory = elements.Path(config.logdir) / folder
+  directory = make_run_subdir(config.logdir, folder, 'replay')
   if config.replicas > 1:
     directory /= f'{config.replica:05}'
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
       chunksize=config.replay.chunksize, directory=directory,
+      cache_chunks=config.replay.cache_chunks,
       seed=stable_seed(config.seed, config.replica, 10, mode == 'eval'))
 
   if config.replay.fracs.uniform < 1 and mode == 'train':
@@ -270,6 +276,33 @@ def make_replay(config, folder, mode='train'):
     ), config.replay.fracs, seed=stable_seed(seed, 4))
 
   return embodied.replay.Replay(**kwargs)
+
+
+def make_run_subdir(logdir, folder, label):
+  folder = str(folder)
+  parts = pathlib.PurePosixPath(folder).parts
+  if (
+      folder.startswith(('/', '~')) or '://' in folder or
+      not folder or '..' in parts):
+    raise ValueError(
+        f'{label} folder must be a relative subdirectory of logdir: {folder}')
+  directory = elements.Path(logdir) / folder
+  logdir_str = str(elements.Path(logdir))
+  directory_str = str(directory)
+  if '://' not in logdir_str:
+    root = os.path.realpath(os.path.expanduser(logdir_str))
+    child = os.path.realpath(os.path.expanduser(directory_str))
+    if os.path.commonpath([root, child]) != root or child == root:
+      raise ValueError(
+          f'{label} directory escaped logdir: {directory_str} not under '
+          f'{logdir_str}')
+  else:
+    prefix = logdir_str.rstrip('/') + '/'
+    if not directory_str.startswith(prefix):
+      raise ValueError(
+          f'{label} directory escaped logdir: {directory_str} not under '
+          f'{logdir_str}')
+  return directory
 
 
 def make_env(config, index, switch_count=0, **overrides):

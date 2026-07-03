@@ -1,5 +1,5 @@
 import threading
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial as bind
 
@@ -14,7 +14,8 @@ class Replay:
 
   def __init__(
       self, length, capacity=None, directory=None, chunksize=1024,
-      online=False, selector=None, save_wait=False, name='unnamed', seed=0):
+      online=False, selector=None, save_wait=False, name='unnamed', seed=0,
+      cache_chunks=0):
 
     self.length = length
     self.capacity = capacity
@@ -26,6 +27,8 @@ class Replay:
     self.chunks = {}
     self.refs = {}
     self.refs_lock = threading.RLock()
+    self.cache_chunks = int(cache_chunks or 0)
+    self.loaded = OrderedDict()
 
     self.items = {}
     self.fifo = deque()
@@ -61,6 +64,7 @@ class Replay:
     stats = {
         'items': len(self.items),
         'chunks': len(self.chunks),
+        'loaded_chunks': sum(x.data is not None for x in self.chunks.values()),
         'streams': len(self.streams),
         'ram_gb': chunk_nbytes / (1024 ** 3),
         'inserts': m['inserts'],
@@ -77,6 +81,7 @@ class Replay:
     with self.rwlock.writing:
       # Clear all data structures
       self.chunks.clear()
+      self.loaded.clear()
       with self.refs_lock:
         self.refs.clear()
       self.items.clear()
@@ -118,6 +123,7 @@ class Replay:
       chunk = self.chunks[chunkid]
       assert chunk.length == index, (chunk.length, index)
       chunk.append(step)
+      self._touch_chunk(chunk)
       assert chunk.length == index + 1, (chunk.length, index + 1)
       stream.append((chunkid, index))
       with self.refs_lock:
@@ -141,6 +147,7 @@ class Replay:
 
       if self.online:
         self.lengths[worker] += 1
+      self._evict_chunks()
 
   @elements.timer.section('replay_sample')
   def sample(self, batch, mode='train'):
@@ -149,6 +156,7 @@ class Replay:
     seqs, is_online = zip(*[self._sample(mode) for _ in range(batch)])
     data = self._assemble_batch(seqs, 0, self.length)
     data = self._annotate_batch(data, is_online, True)
+    self._evict_chunks()
     return data
 
   @elements.timer.section('replay_update')
@@ -172,6 +180,7 @@ class Replay:
           self._setseq(chunkid, index, values)
         except KeyError:
           pass
+    self._evict_chunks()
 
   def _sample(self, mode):
     assert mode in ('train', 'report', 'eval'), mode
@@ -199,7 +208,7 @@ class Replay:
     itemid = self.itemid
     self.itemid += 1
     self.items[itemid] = (chunkid, index)
-    stepids = self._getseq(chunkid, index, ['stepid'])['stepid']
+    stepids = self._stepids_for_seq(chunkid, index)
     self.sampler[itemid] = stepids
     self.fifo.append(itemid)
 
@@ -216,7 +225,7 @@ class Replay:
           self.refs[chunk.succ] -= 1
 
   def _getseq(self, chunkid, index, keys=None, concat=True):
-    chunk = self.chunks[chunkid]
+    chunk = self._ensure_chunk_data(chunkid)
     available = chunk.length - index
     if available >= self.length:
       with elements.timer.section('get_slice'):
@@ -229,7 +238,7 @@ class Replay:
         parts = [chunk.slice(index, available)]
         remaining = self.length - available
         while remaining > 0:
-          chunk = self.chunks[chunk.succ]
+          chunk = self._ensure_chunk_data(chunk.succ)
           used = min(remaining, chunk.length)
           parts.append(chunk.slice(0, used))
           remaining -= used
@@ -240,24 +249,95 @@ class Replay:
 
   def _setseq(self, chunkid, index, values):
     length = len(next(iter(values.values())))
-    chunk = self.chunks[chunkid]
+    chunk = self._ensure_chunk_data(chunkid)
     available = chunk.length - index
     if available >= length:
       with elements.timer.section('set_slice'):
-        return chunk.update(index, length, values)
+        result = chunk.update(index, length, values)
+        self._mark_dirty(chunk)
+        return result
     else:
       with elements.timer.section('set_compose'):
         part = {k: v[:available] for k, v in values.items()}
         values = {k: v[available:] for k, v in values.items()}
         chunk.update(index, available, part)
+        self._mark_dirty(chunk)
         remaining = length - available
         while remaining > 0:
-          chunk = self.chunks[chunk.succ]
+          chunk = self._ensure_chunk_data(chunk.succ)
           used = min(remaining, chunk.length)
           part = {k: v[:used] for k, v in values.items()}
           values = {k: v[used:] for k, v in values.items()}
           chunk.update(0, used, part)
+          self._mark_dirty(chunk)
           remaining -= used
+
+  def _stepids_for_seq(self, chunkid, index):
+    stepids = []
+    remaining = self.length
+    chunk = self.chunks[chunkid]
+    while remaining > 0:
+      available = chunk.length - index
+      used = min(remaining, available)
+      for offset in range(index, index + used):
+        stepids.append(np.frombuffer(
+            bytes(chunk.uuid) + offset.to_bytes(4, 'big'), np.uint8))
+      remaining -= used
+      if remaining > 0:
+        chunk = self.chunks[chunk.succ]
+        index = 0
+    return np.stack(stepids, 0)
+
+  def _ensure_chunk_data(self, chunkid):
+    chunk = self.chunks[chunkid]
+    if chunk.data is None:
+      if not self.directory:
+        raise KeyError(chunkid)
+      loaded = chunklib.Chunk.load(self.directory / chunk.filename, error='none')
+      if loaded is None:
+        raise KeyError(chunkid)
+      chunk.data = loaded.data
+      chunk.saved = True
+    self._touch_chunk(chunk)
+    return chunk
+
+  def _touch_chunk(self, chunk):
+    if chunk.data is None:
+      return
+    self.loaded.pop(chunk.uuid, None)
+    self.loaded[chunk.uuid] = None
+
+  def _mark_dirty(self, chunk):
+    if not self.directory:
+      return
+    chunk.saved = False
+    self.saved.discard(chunk.uuid)
+    self._touch_chunk(chunk)
+
+  def _save_chunk_now(self, chunk):
+    if not self.directory or chunk.data is None or chunk.uuid in self.saved:
+      return
+    chunk.save(self.directory)
+    self.saved.add(chunk.uuid)
+
+  def _evict_chunks(self):
+    if not self.cache_chunks or not self.directory:
+      return
+    current = {chunkid for chunkid, _ in self.current.values()}
+    while len(self.loaded) > self.cache_chunks:
+      chunkid = next(iter(self.loaded))
+      if chunkid in current:
+        self.loaded.move_to_end(chunkid)
+        if all(uuid in current for uuid in self.loaded):
+          break
+        continue
+      chunk = self.chunks.get(chunkid)
+      self.loaded.pop(chunkid, None)
+      if chunk is None or chunk.data is None:
+        continue
+      self._save_chunk_now(chunk)
+      if chunk.uuid in self.saved:
+        chunk.data = None
 
   # def dataset(self, batch, length=None, consec=None, prefix=0, report=False):
   #   length = length or self.length
@@ -326,11 +406,13 @@ class Replay:
             self._complete(chunk, worker)
         promises = []
         for chunk in self.chunks.values():
-          if chunk.length > 0 and chunk.uuid not in self.saved:
+          if (chunk.length > 0 and chunk.data is not None and
+              chunk.uuid not in self.saved):
             self.saved.add(chunk.uuid)
             promises.append(self.workers.submit(chunk.save, self.directory))
-        if self.save_wait:
+        if self.save_wait or self.cache_chunks:
           [promise.result() for promise in promises]
+        self._evict_chunks()
     return None
 
   @elements.timer.section('replay_load')
@@ -358,11 +440,18 @@ class Replay:
       if total >= amount:
         break
 
-    load = bind(chunklib.Chunk.load, error='none')
     filenames = [directory / x for x in names_ondisk[:numchunks]]
-
-    with ThreadPoolExecutor(16, 'replay_loader') as pool:
-      chunks = [x for x in pool.map(load, filenames) if x]
+    if self.cache_chunks:
+      chunks = []
+      for filename in filenames:
+        chunk = chunklib.Chunk.load(filename, error='none')
+        if chunk:
+          chunk.data = None
+          chunks.append(chunk)
+    else:
+      load = bind(chunklib.Chunk.load, error='none')
+      with ThreadPoolExecutor(16, 'replay_loader') as pool:
+        chunks = [x for x in pool.map(load, filenames) if x]
 
     # We need to recompute the number of items per chunk now because some
     # chunks may be corrupted and thus not available.
@@ -375,6 +464,7 @@ class Replay:
         for chunk in chunks:
           self.chunks[chunk.uuid] = chunk
           self.refs[chunk.uuid] = 0
+          self._touch_chunk(chunk)
         for chunk in reversed(chunks):
           amount = numitems[chunk.uuid]
           self.refs[chunk.uuid] += amount
@@ -392,6 +482,7 @@ class Replay:
     self.chunks[succ.uuid] = succ
     self.current[worker] = (succ.uuid, 0)
     chunk.succ = succ.uuid
+    self._touch_chunk(succ)
     return succ
 
   def _numitems(self, chunks):

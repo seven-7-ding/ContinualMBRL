@@ -6,14 +6,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Available CUDA devices for this experiment.
-CUDA_DEVICES=(6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5)
+CUDA_DEVICES=(2 3 4 5 6 7 0 1 2 3 4 5 6 7 0 1 2 3 4 5)
 
 # Maximum concurrent runs launched by this script on each GPU.
 MAX_RUNS_PER_GPU=1
 
 # Continual task string. When multiple tasks are listed, use the largest
 # probed obs/action dimensions across the successfully probed entries.
-TASK_STRING="quadruped_walk|quadruped_run|quadruped_escape"
+TASK_STRING="quadruped_walk|quadruped_escape|quadruped_fetch"
 
 # Read real dimensions for the selected tasks from the probed JSON summary.
 DIMS_JSON="$REPO_ROOT/embodied/envs/dmc_priori_dims.json"
@@ -103,29 +103,29 @@ fi
 # ============= Settings Definition =============
 # Format: "reset_target|seed"
 declare -a SETTINGS=(
-    # "no_reset|1000"
-    # "no_reset|2000"
-    # "no_reset|3000"
+    "no_reset|1000"
+    "no_reset|2000"
+    "no_reset|3000"
 
     "all|1000"
     "all|2000"
     "all|3000"
 
-    # "ab_wm_head|1000"
-    # "ab_wm_head|2000"
-    # "ab_wm_head|3000"
+    "ab_wm_head|1000"
+    "ab_wm_head|2000"
+    "ab_wm_head|3000"
 
-    # "ab_agent_head|1000"
-    # "ab_agent_head|2000"
-    # "ab_agent_head|3000"
+    "ab_agent_head|1000"
+    "ab_agent_head|2000"
+    "ab_agent_head|3000"
     
-    # "agent_head|1000"
-    # "agent_head|2000"
-    # "agent_head|3000"
+    "agent_head|1000"
+    "agent_head|2000"
+    "agent_head|3000"
 
-    # "wm_head|1000"
-    # "wm_head|2000"
-    # "wm_head|3000"
+    "wm_head|1000"
+    "wm_head|2000"
+    "wm_head|3000"
 
     # "entire_agent|1000"
     # "entire_agent|2000"

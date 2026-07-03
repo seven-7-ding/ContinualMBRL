@@ -48,6 +48,7 @@ defaults:
     priosignal: model
     recexp: 1.0
     chunksize: 1024
+    cache_chunks: 0
 
   run:
     steps: 1e10
