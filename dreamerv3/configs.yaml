@@ -77,6 +77,9 @@ defaults:
     # TODO: additional configs for continual dmc_vision.
     task_repeat: 10
     task_interval: 1e5
+    # Optional per-task intervals, for example "1e6|2e6|4e6".
+    # Empty keeps the legacy fixed task_interval behavior.
+    task_intervals: ''
     # Periodic model reset for continual runs.
     # reset_frequency is independent from agent.redo.frequency.
     reset_frequency: 1e5

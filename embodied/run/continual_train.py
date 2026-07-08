@@ -27,6 +27,27 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   _raw_task = getattr(args, 'task', '')
   task_list = [t.strip() for t in _raw_task.split('|')] if '|' in _raw_task else [_raw_task or 'task']
 
+  def parse_task_intervals(value):
+    if value in (None, False, '', 'none', 'None'):
+      return None
+    if isinstance(value, str):
+      raw_items = value.replace(',', '|').split('|')
+    else:
+      raw_items = list(value)
+    intervals = [int(float(item)) for item in raw_items if str(item).strip()]
+    if len(intervals) != len(task_list):
+      raise ValueError(
+          f'run.task_intervals must provide one interval per task: '
+          f'got {intervals} for tasks {task_list}')
+    if any(interval <= 0 for interval in intervals):
+      raise ValueError(f'run.task_intervals must be positive, got {intervals}')
+    return intervals
+
+  task_intervals = parse_task_intervals(getattr(args, 'task_intervals', ''))
+  task_boundaries = None
+  if task_intervals:
+    task_boundaries = np.cumsum(task_intervals).astype(np.int64).tolist()
+
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
   print(f'Train ratio: {should_train._ratio}, Batch steps: {batch_steps}, Train calls per step: {args.train_ratio / batch_steps}')
@@ -35,7 +56,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   should_report = elements.when.Every(args.report_every)
   should_save = embodied.LocalClock(args.save_every)
   # TODO: enable env switching.
-  should_switch = elements.when.Every(args.task_interval, initial=True)
+  should_switch = None
+  if not task_intervals:
+    should_switch = elements.when.Every(args.task_interval, initial=True)
   reset_frequency = int(getattr(args, 'reset_frequency', 0) or 0)
   revive_epoch = int(getattr(args, 'revive_epoch', 0) or 0)
   revive_strategy = str(getattr(args, 'revive_strategy', 'fixed')).lower()
@@ -511,9 +534,21 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=args.from_checkpoint_regex)))
   def switch_count_from_step(value):
+    if task_intervals:
+      return sum(int(value) >= boundary for boundary in task_boundaries)
     if not task_list or args.task_interval <= 0:
       return 0
     return int(value) // int(args.task_interval)
+
+  def phase_start_from_switch_count(count):
+    if task_intervals:
+      return 0 if count <= 0 else int(task_boundaries[count - 1])
+    return count * int(args.task_interval)
+
+  def should_switch_now(value, count):
+    if task_intervals:
+      return count < len(task_boundaries) and int(value) >= task_boundaries[count]
+    return should_switch(value)
 
   checkpoint_exists = cp.exists()
   if checkpoint_exists:
@@ -532,12 +567,13 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   # this, resumed continual runs restart from task 0 and log scores under the
   # wrong task keys until future switches catch up.
   switch_count = switch_count_from_step(step.value)
-  if checkpoint_exists and args.task_interval > 0 and switch_count > 0:
-    phase_steps = int(step.value) - switch_count * int(args.task_interval)
+  if checkpoint_exists and switch_count > 0:
+    phase_steps = int(step.value) - phase_start_from_switch_count(switch_count)
     replay.clear()
     if phase_steps > 0:
       replay.load(amount=phase_steps)
-  should_switch(step)
+  if should_switch is not None:
+    should_switch(step)
   fns = [bind(make_env, i, switch_count=switch_count) for i in range(args.envs)]
   driver = embodied.Driver(fns, parallel=not args.debug)
   driver.on_step(lambda tran, _: step.increment())
@@ -553,7 +589,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         periodic_reset()
         next_reset_step[0] += reset_frequency
 
-    if should_switch(step):
+    if should_switch_now(step, switch_count):
       switch_count += 1
       fns = [bind(make_env, i, switch_count=switch_count) for i in range(args.envs)]
       driver.switch_envs(
