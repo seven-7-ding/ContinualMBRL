@@ -97,3 +97,16 @@ class Chunk:
     chunk.data = data
     chunk.saved = True
     return chunk
+
+  @classmethod
+  def metadata(cls, filename):
+    time, uuid, succ, length = filename.stem.split('-')
+    length = int(length)
+    chunk = cls(length)
+    chunk.time = time
+    chunk.uuid = elements.UUID(uuid)
+    chunk.succ = elements.UUID(succ)
+    chunk.length = length
+    chunk.data = None
+    chunk.saved = True
+    return chunk

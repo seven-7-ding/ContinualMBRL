@@ -76,9 +76,17 @@ class Replay:
       self.metrics[key] = 0
     return stats
 
-  def clear(self):
+  def clear(self, disk=False, archive_prefix='cleared'):
     """Clear all transitions from the replay buffer."""
     with self.rwlock.writing:
+      if disk and self.directory:
+        files = list(self.directory.glob('*.npz'))
+        if files:
+          archive = self.directory / f'{archive_prefix}_{elements.timestamp(millis=True)}'
+          archive.mkdir()
+          for filename in files:
+            filename.move(archive / filename.name)
+
       # Clear all data structures
       self.chunks.clear()
       self.loaded.clear()
@@ -208,7 +216,9 @@ class Replay:
     itemid = self.itemid
     self.itemid += 1
     self.items[itemid] = (chunkid, index)
-    stepids = self._stepids_for_seq(chunkid, index)
+    stepids = (
+        self._stepids_for_seq(chunkid, index)
+        if self._sampler_needs_stepids(self.sampler) else None)
     self.sampler[itemid] = stepids
     self.fifo.append(itemid)
 
@@ -288,6 +298,13 @@ class Replay:
         index = 0
     return np.stack(stepids, 0)
 
+  def _sampler_needs_stepids(self, sampler):
+    if isinstance(sampler, selectors.Prioritized):
+      return True
+    if isinstance(sampler, selectors.Mixture):
+      return any(self._sampler_needs_stepids(x) for x in sampler.selectors)
+    return False
+
   def _ensure_chunk_data(self, chunkid):
     chunk = self.chunks[chunkid]
     if chunk.data is None:
@@ -315,7 +332,10 @@ class Replay:
     self._touch_chunk(chunk)
 
   def _save_chunk_now(self, chunk):
-    if not self.directory or chunk.data is None or chunk.uuid in self.saved:
+    if not self.directory or chunk.data is None:
+      return
+    if chunk.saved:
+      self.saved.add(chunk.uuid)
       return
     chunk.save(self.directory)
     self.saved.add(chunk.uuid)
@@ -406,12 +426,16 @@ class Replay:
             self._complete(chunk, worker)
         promises = []
         for chunk in self.chunks.values():
-          if (chunk.length > 0 and chunk.data is not None and
-              chunk.uuid not in self.saved):
+          if chunk.length <= 0 or chunk.data is None:
+            continue
+          if chunk.saved:
             self.saved.add(chunk.uuid)
-            promises.append(self.workers.submit(chunk.save, self.directory))
+            continue
+          promises.append(self.workers.submit(chunk.save, self.directory))
         if self.save_wait or self.cache_chunks:
           [promise.result() for promise in promises]
+          self.saved.update(chunk.uuid for chunk in self.chunks.values()
+                            if chunk.saved)
         self._evict_chunks()
     return None
 
@@ -442,12 +466,7 @@ class Replay:
 
     filenames = [directory / x for x in names_ondisk[:numchunks]]
     if self.cache_chunks:
-      chunks = []
-      for filename in filenames:
-        chunk = chunklib.Chunk.load(filename, error='none')
-        if chunk:
-          chunk.data = None
-          chunks.append(chunk)
+      chunks = [chunklib.Chunk.metadata(filename) for filename in filenames]
     else:
       load = bind(chunklib.Chunk.load, error='none')
       with ThreadPoolExecutor(16, 'replay_loader') as pool:

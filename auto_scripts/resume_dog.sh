@@ -12,9 +12,12 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-8}"
 WANDB_RESUME_MODE="${WANDB_RESUME_MODE:-allow}"
 REQUIRE_WANDB_ID="${REQUIRE_WANDB_ID:-1}"
 REPLAY_CACHE_CHUNKS="${REPLAY_CACHE_CHUNKS:-512}"
+REPLAY_CHUNKSIZE="${REPLAY_CHUNKSIZE:-1024}"
+MAX_LAST_STEP="${MAX_LAST_STEP:-6000000}"
 DRY_RUN="${DRY_RUN:-0}"
 TARGETS="${TARGETS:-}"
 SEEDS="${SEEDS:-}"
+LOGDIRS="${LOGDIRS:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 read -r -a CUDA_DEVICES <<< "$CUDA_DEVICES_STR"
@@ -131,6 +134,10 @@ PY
 
 wandb_id_for_logdir() {
   local logdir="$1"
+  if [[ -s "$logdir/wandb_corrected_id.txt" ]]; then
+    head -n 1 "$logdir/wandb_corrected_id.txt"
+    return
+  fi
   python - "$logdir" <<'PY'
 from pathlib import Path
 import sys
@@ -151,7 +158,17 @@ append_run_manifest() {
   echo -e "$row" >> "$path"
 }
 
-while IFS= read -r -d '' logdir; do
+if [[ -n "$LOGDIRS" ]]; then
+  read -r -a CANDIDATE_LOGDIRS <<< "$LOGDIRS"
+else
+  CANDIDATE_LOGDIRS=()
+  while IFS= read -r -d '' logdir; do
+    CANDIDATE_LOGDIRS+=("$logdir")
+  done < <(find "$DOG_ROOT" -mindepth 2 -maxdepth 2 -type d -name 'seed_*' -print0 | sort -z)
+fi
+
+for logdir in "${CANDIDATE_LOGDIRS[@]}"; do
+  [[ -n "$logdir" ]] || continue
   if [[ ! -d "$logdir/ckpt" ]]; then
     echo "SKIP no checkpoint: $logdir"
     skipped_count=$((skipped_count + 1))
@@ -176,6 +193,11 @@ while IFS= read -r -d '' logdir; do
   fi
   if (( last_step >= steps )); then
     echo "SKIP completed: $logdir (last_step=$last_step steps=$steps)"
+    skipped_count=$((skipped_count + 1))
+    continue
+  fi
+  if [[ -n "$MAX_LAST_STEP" && "$last_step" -ge "$MAX_LAST_STEP" ]]; then
+    echo "SKIP reached max resume step: $logdir (last_step=$last_step max=$MAX_LAST_STEP)"
     skipped_count=$((skipped_count + 1))
     continue
   fi
@@ -211,6 +233,7 @@ while IFS= read -r -d '' logdir; do
     --env.continual_dmc_priori.obs_dim "$obs_dim"
     --env.continual_dmc_priori.task_action_space "$task_action_space"
     --replay.cache_chunks "$REPLAY_CACHE_CHUNKS"
+    --replay.chunksize "$REPLAY_CHUNKSIZE"
     --seed "$seed"
     --egl_device "$device_num"
     --agent.imag_length "$imag_length"
@@ -230,6 +253,7 @@ while IFS= read -r -d '' logdir; do
   echo "  gpu: $device_num"
   echo "  wandb: ${wandb_id:-NEW_RUN}"
   echo "  replay cache chunks: $REPLAY_CACHE_CHUNKS"
+  echo "  replay chunksize: $REPLAY_CHUNKSIZE"
   echo "  log: $resume_log"
 
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -256,7 +280,7 @@ while IFS= read -r -d '' logdir; do
     "$logdir\t$pid\t$device_num\t${wandb_id:-}\t$last_step\t$steps\t$reset_target\t$seed\t$resume_log"
   launch_count=$((launch_count + 1))
   sleep 5
-done < <(find "$DOG_ROOT" -mindepth 2 -maxdepth 2 -type d -name 'seed_*' -print0 | sort -z)
+done
 
 echo "Resume deployment complete."
 if [[ "$DRY_RUN" == "1" ]]; then

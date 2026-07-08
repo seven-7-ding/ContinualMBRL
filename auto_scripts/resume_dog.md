@@ -47,11 +47,17 @@ MAX_CONCURRENT=8
 WANDB_RESUME_MODE=allow
 REQUIRE_WANDB_ID=1
 REPLAY_CACHE_CHUNKS=512
+REPLAY_CHUNKSIZE=1024
+MAX_LAST_STEP=6000000
 ```
 
 Set `MAX_CONCURRENT` conservatively when other experiments are running on the
 same machine. The previous interruptions were caused by system memory OOM, so
 restarting too many runs at once can reproduce the same failure mode.
+
+`MAX_LAST_STEP` skips runs whose latest logged step is already at or above the
+threshold. The default keeps runs that have reached `6e6` steps from being
+resumed.
 
 `REPLAY_CACHE_CHUNKS` limits how many completed replay chunks stay resident in
 RAM. Older chunks remain on disk and are loaded on demand when sampled. This
@@ -59,6 +65,10 @@ keeps the replay sampling distribution and stored training data unchanged, but
 trades additional disk I/O for lower RAM usage. The default `512` is conservative
 for the dog runs; set it to `0` to restore the old behavior where all loaded
 replay chunks stay in memory.
+
+`REPLAY_CHUNKSIZE` controls the size of newly written replay chunks after
+resume. It does not rewrite existing `.npz` chunks, but larger values reduce
+the number of future replay files and checkpoint-time chunk completions.
 
 ## Outputs
 

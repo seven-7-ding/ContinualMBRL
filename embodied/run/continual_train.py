@@ -272,7 +272,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       result.update(stats(rew, "real_reward"))
       epstats.add(result)
 
-  stream_train = iter(agent.stream(make_stream(replay, 'train')))
+  stream_train = [None]
   # Create report stream lazily. Some small-model configs use a train replay
   # length shorter than report_length, and eager prefetch would fail before the
   # first report is actually needed.
@@ -284,9 +284,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   def trainfn(tran, worker):
     if len(replay) < args.batch_size * args.batch_length:
       return
+    if stream_train[0] is None:
+      stream_train[0] = iter(agent.stream(make_stream(replay, 'train')))
     for _ in range(should_train(step)):
       with elements.timer.section('stream_next'):
-        batch = next(stream_train)
+        batch = next(stream_train[0])
       carry_train[0], outs, mets = agent.train(carry_train[0], batch)
       train_fps.step(batch_steps)
       if 'replay' in outs:
@@ -314,8 +316,10 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     for _ in range(max_steps):
       if len(replay) < min_replay_for_train:
         break
+      if stream_train[0] is None:
+        stream_train[0] = iter(agent.stream(make_stream(replay, 'train')))
       with elements.timer.section('stream_next'):
-        batch = next(stream_train)
+        batch = next(stream_train[0])
       carry_train[0], outs, mets = agent.train(
           carry_train[0], batch, train_mode=mode)
       train_fps.step(batch_steps)
@@ -506,14 +510,34 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   if args.from_checkpoint:
     elements.checkpoint.load(args.from_checkpoint, dict(
         agent=bind(agent.load, regex=args.from_checkpoint_regex)))
-  cp.load_or_save()
+  def switch_count_from_step(value):
+    if not task_list or args.task_interval <= 0:
+      return 0
+    return int(value) // int(args.task_interval)
+
+  checkpoint_exists = cp.exists()
+  if checkpoint_exists:
+    cp.load()
+  else:
+    cp.save()
+  if reset_frequency > 0:
+    current_step = int(step.value)
+    next_reset_step[0] = (
+        current_step // reset_frequency + 1) * reset_frequency
 
   print('Start training loop')
   policy = lambda *args: agent.policy(*args, mode='train')
 
-  # TODO: first env.
+  # Restore the environment phase from the checkpointed global step. Without
+  # this, resumed continual runs restart from task 0 and log scores under the
+  # wrong task keys until future switches catch up.
+  switch_count = switch_count_from_step(step.value)
+  if checkpoint_exists and args.task_interval > 0 and switch_count > 0:
+    phase_steps = int(step.value) - switch_count * int(args.task_interval)
+    replay.clear()
+    if phase_steps > 0:
+      replay.load(amount=phase_steps)
   should_switch(step)
-  switch_count = 0
   fns = [bind(make_env, i, switch_count=switch_count) for i in range(args.envs)]
   driver = embodied.Driver(fns, parallel=not args.debug)
   driver.on_step(lambda tran, _: step.increment())
@@ -536,7 +560,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         fns, parallel=not args.debug
       )
       driver.reset(agent.init_policy)
-      replay.clear()
+      replay.clear(disk=True, archive_prefix=f'task_switch_{int(step.value)}')
+      stream_train[0] = None
+      stream_report[0] = None
       print(f"Switched to new environment at step {step.value}.")
 
     driver(policy, steps=10)
