@@ -63,9 +63,10 @@ class Chunk:
 
   @elements.timer.section('chunk_save')
   def save(self, directory, log=False):
-    assert not self.saved
-    self.saved = True
     filename = elements.Path(directory) / self.filename
+    if self.saved and filename.exists():
+      return
+    self.saved = True
     data = {k: v[:self.length] for k, v in self.data.items()}
     with io.BytesIO() as stream:
       np.savez_compressed(stream, **data)

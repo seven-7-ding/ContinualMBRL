@@ -11,6 +11,8 @@ cd "$REPO_ROOT"
 
 CUDA_DEVICES_STR="${CUDA_DEVICES_STR:-2 3}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-2}"
+LAUNCH_SLEEP="${LAUNCH_SLEEP:-45}"
+WAIT_SLEEP="${WAIT_SLEEP:-60}"
 MODEL_SIZE="${MODEL_SIZE:-size1m}"
 PREFIX="${PREFIX:-continual_dreamer_soft_reset}"
 BASE_LOGDIR_ROOT="${BASE_LOGDIR_ROOT:-logdir}"
@@ -21,7 +23,7 @@ RESET_MECHANISM="${RESET_MECHANISM:-sandp}"
 RESET_ALPHA="${RESET_ALPHA:-0.8}"
 REVIVE_EPOCH="${REVIVE_EPOCH:-0}"
 REVIVE_STRATEGY="${REVIVE_STRATEGY:-threshold}"
-REPLAY_CACHE_CHUNKS="${REPLAY_CACHE_CHUNKS:-512}"
+REPLAY_CACHE_CHUNKS="${REPLAY_CACHE_CHUNKS:-4096}"
 REPLAY_CHUNKSIZE="${REPLAY_CHUNKSIZE:-1024}"
 
 AGENT_IMAG_LENGTH="${AGENT_IMAG_LENGTH:-15}"
@@ -54,12 +56,6 @@ declare -a SETTINGS=(
   "all|1000"
   "all|2000"
   "all|3000"
-  "ab_wm_head|1000"
-  "ab_wm_head|2000"
-  "ab_wm_head|3000"
-  "ab_agent_head|1000"
-  "ab_agent_head|2000"
-  "ab_agent_head|3000"
   "agent_head|1000"
   "agent_head|2000"
   "agent_head|3000"
@@ -170,12 +166,13 @@ launch_run() {
 
 wait_for_slot() {
   while (( $(jobs -pr | wc -l) >= MAX_CONCURRENT )); do
-    sleep 60
+    sleep "$WAIT_SLEEP"
   done
 }
 
 echo "Sequence experiment launcher"
 echo "CUDA_DEVICES_STR=$CUDA_DEVICES_STR MAX_CONCURRENT=$MAX_CONCURRENT MODEL_SIZE=$MODEL_SIZE"
+echo "LAUNCH_SLEEP=$LAUNCH_SLEEP WAIT_SLEEP=$WAIT_SLEEP"
 echo "Reset: mechanism=$RESET_MECHANISM alpha=$RESET_ALPHA frequency=$RESET_FREQUENCY revive=$REVIVE_EPOCH/$REVIVE_STRATEGY"
 
 job_idx=0
@@ -194,7 +191,7 @@ for setting in "${SETTINGS[@]}"; do
     "$seed" \
     "$gpu"
   job_idx=$((job_idx + 1))
-  sleep 45
+  sleep "$LAUNCH_SLEEP"
 
   wait_for_slot
   gpu="${CUDA_DEVICES[$((job_idx % ${#CUDA_DEVICES[@]}))]}"
@@ -208,7 +205,7 @@ for setting in "${SETTINGS[@]}"; do
     "$seed" \
     "$gpu"
   job_idx=$((job_idx + 1))
-  sleep 45
+  sleep "$LAUNCH_SLEEP"
 done
 
 wait
