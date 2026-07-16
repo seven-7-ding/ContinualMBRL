@@ -1,0 +1,33 @@
+在这个repo中，帮我做好以下事情：
+【1】首先，在这个repo中，我需要你帮我清理之前留下来的无用的reset mechanism/reset target：
+    * 所有的hard, sandp, sandp_wo_opt, shrink_skip_last, weight_scale, merge, opt_only等等reset mechanism，全部清理掉。
+    * reset target方面，清理所有冗余的类别（比如entire agent似乎就是冗余的），仅保留all/agent_head/wm_head/dyn/all_head
+    * 然后，在代码文件或配置文件中留一个很便捷的入口，用户之后可以在这里
+        1）看到整个system中所有的组件
+        2）并选择所需要的组件
+        3）然后命名一种新的reset target
+        4）之后就可以在运行脚本中指定该reset target进行reset的实验了。
+        5）第二点中我要求你保留的all/agent_head/wm_head/dyn/all_head等reset target也应该在这个入口处有配置记录。
+【2】实现WSC（weight scale control）机制：
+    1. 对于指定组件（reset target）的每层linear/convolutional layer，如果其后面接有RMSNorm层，则在每次update后，将该层的[w|b]矩阵整体进行标量放缩（c），使其Frobinus Norm被还原到一个常数（记为target_norm）。
+    2. 如果其后面没有RMSNorm层，则对于这个layer进行改造：
+        1）给这一层添加一个scale参数；
+        2）在每次update后，将该层的[w|b]矩阵整体进行标量放缩（同时乘上c），使其Frobinus Norm被还原到一个常数（记为target_norm）（同上）。
+        3）该层的scale参数则：
+            i）如果选择了"WSC_nograd_scale"机制，scale参数不参与梯度下降更新，而只是对应地进行与该层的w/b参数相反的标量放缩（除以c），使得该层的输出值大小不变。
+            ii）如果选择了"WSC_grad_scale"机制，则scale参数直接参与梯度下降更新（被optimzier接收和统一管理），且不再需要按照比例得到相反的标量放缩。
+    3. 对于参数Frobinus范数的放缩目标（target_norm），可以选择的是：
+        i）一个预先设定的常数（例如1.0, 2.0, ...）；
+        ii）参数被初始化时，该层对应的Frobinus范数；
+        iii）不设置target_norm值，而是直接设置常数c（例如0.999）。
+        * 上述的三种，分别对应了一种细分的WSC机制。
+【3】在记录训练过程中的指标时，除了已有的指标之外，再外加汇报以下指标：
+    1. 对于后面没有接上RMSNorm层的layer，汇报该层的
+        * scale参数大小
+        * 输出值的2范数的平均值（对于行为[batch_size, dim]的输出，先计算batch_size个长为dim的输出向量的2范数，再对于batch_size进行平均值计算）。
+    2. 检查现在已有的汇报中，对于每一层的"grad_mean"指标汇报是在优化器进行stepsize调整后得到的“实际gradient”还是初始的gradient。这两个我都需要得到汇报。
+【4】完成上述的代码更新后，清理无关和冗余的代码。我需要你使用上面实现了的若干种WSC机制（target为all），分别跑以下的continual mojoco实验：
+    1. "walker_run|hopper_hop|fish_swim"，每个task各1m步，总共训练5轮。wandb汇报的project为https://wandb.ai/stevendiffdiff-/continual_dreamer_soft_reset_size1m/workspace?nw=nwuserstevendiffdiff
+    2. "humanoid_stand|humanoid_run"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_humanoid.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
+    3. "dog_stand|dog_walk|dog_trot"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_dog.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
+    4. quadruped系列，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_quadruped.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。

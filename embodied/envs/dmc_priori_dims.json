@@ -1,0 +1,489 @@
+{
+  "probe_obs_dim": 512,
+  "probe_act_dim": 128,
+  "num_tasks": 56,
+  "tasks": [
+    {
+      "status": "ok",
+      "task": "acrobot_swingup",
+      "real_obs_dim": 6,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 6
+    },
+    {
+      "status": "ok",
+      "task": "acrobot_swingup_sparse",
+      "real_obs_dim": 6,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 6
+    },
+    {
+      "status": "error",
+      "task": "ball_in_cup_catch",
+      "error_type": "ValueError",
+      "error": "Domain 'ball' does not exist.",
+      "known_obs_dim_hint": 8
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_balance",
+      "real_obs_dim": 5,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 5
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_balance_sparse",
+      "real_obs_dim": 5,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 5
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_swingup",
+      "real_obs_dim": 5,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 5
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_swingup_sparse",
+      "real_obs_dim": 5,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 5
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_three_poles",
+      "real_obs_dim": 11,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "cartpole_two_poles",
+      "real_obs_dim": 8,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 8
+    },
+    {
+      "status": "ok",
+      "task": "cheetah_run",
+      "real_obs_dim": 17,
+      "real_act_dim": 6,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 17
+    },
+    {
+      "status": "ok",
+      "task": "cup_catch",
+      "real_obs_dim": 8,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "dog_fetch",
+      "real_obs_dim": 232,
+      "real_act_dim": 38,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "dog_run",
+      "real_obs_dim": 223,
+      "real_act_dim": 38,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "dog_stand",
+      "real_obs_dim": 223,
+      "real_act_dim": 38,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "dog_trot",
+      "real_obs_dim": 223,
+      "real_act_dim": 38,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "dog_walk",
+      "real_obs_dim": 223,
+      "real_act_dim": 38,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "finger_spin",
+      "real_obs_dim": 9,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 9
+    },
+    {
+      "status": "ok",
+      "task": "finger_turn_easy",
+      "real_obs_dim": 12,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 9
+    },
+    {
+      "status": "ok",
+      "task": "finger_turn_hard",
+      "real_obs_dim": 12,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 9
+    },
+    {
+      "status": "ok",
+      "task": "fish_swim",
+      "real_obs_dim": 24,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "fish_upright",
+      "real_obs_dim": 21,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "hopper_hop",
+      "real_obs_dim": 15,
+      "real_act_dim": 4,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 15
+    },
+    {
+      "status": "ok",
+      "task": "hopper_stand",
+      "real_obs_dim": 15,
+      "real_act_dim": 4,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 15
+    },
+    {
+      "status": "error",
+      "task": "humanoid_CMU_run",
+      "error_type": "ValueError",
+      "error": "Level 'CMU_run' does not exist in domain 'humanoid'.",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "error",
+      "task": "humanoid_CMU_stand",
+      "error_type": "ValueError",
+      "error": "Level 'CMU_stand' does not exist in domain 'humanoid'.",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "error",
+      "task": "humanoid_CMU_walk",
+      "error_type": "ValueError",
+      "error": "Level 'CMU_walk' does not exist in domain 'humanoid'.",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "humanoid_run",
+      "real_obs_dim": 67,
+      "real_act_dim": 21,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 67
+    },
+    {
+      "status": "ok",
+      "task": "humanoid_run_pure_state",
+      "real_obs_dim": 55,
+      "real_act_dim": 21,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "humanoid_stand",
+      "real_obs_dim": 67,
+      "real_act_dim": 21,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 67
+    },
+    {
+      "status": "ok",
+      "task": "humanoid_walk",
+      "real_obs_dim": 67,
+      "real_act_dim": 21,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 67
+    },
+    {
+      "status": "ok",
+      "task": "lqr_lqr_2_1",
+      "real_obs_dim": 4,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "lqr_lqr_6_2",
+      "real_obs_dim": 12,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "manipulator_bring_ball",
+      "real_obs_dim": 44,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "manipulator_bring_peg",
+      "real_obs_dim": 44,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "manipulator_insert_ball",
+      "real_obs_dim": 44,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "manipulator_insert_peg",
+      "real_obs_dim": 44,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "pendulum_swingup",
+      "real_obs_dim": 3,
+      "real_act_dim": 1,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 3
+    },
+    {
+      "status": "error",
+      "task": "point_mass_easy",
+      "error_type": "ValueError",
+      "error": "Domain 'point' does not exist.",
+      "known_obs_dim_hint": 4
+    },
+    {
+      "status": "error",
+      "task": "point_mass_hard",
+      "error_type": "ValueError",
+      "error": "Domain 'point' does not exist.",
+      "known_obs_dim_hint": 4
+    },
+    {
+      "status": "error",
+      "task": "quadruped_escape",
+      "error_type": "FatalError",
+      "error": "an OpenGL platform library has not been loaded into this process, this most likely means that a valid OpenGL context has not been created before mjr_makeContext was called",
+      "known_obs_dim_hint": 78
+    },
+    {
+      "status": "ok",
+      "task": "quadruped_fetch",
+      "real_obs_dim": 90,
+      "real_act_dim": 12,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 78
+    },
+    {
+      "status": "ok",
+      "task": "quadruped_run",
+      "real_obs_dim": 78,
+      "real_act_dim": 12,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 78
+    },
+    {
+      "status": "ok",
+      "task": "quadruped_walk",
+      "real_obs_dim": 78,
+      "real_act_dim": 12,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 78
+    },
+    {
+      "status": "ok",
+      "task": "reacher_easy",
+      "real_obs_dim": 6,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 6
+    },
+    {
+      "status": "ok",
+      "task": "reacher_hard",
+      "real_obs_dim": 6,
+      "real_act_dim": 2,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 6
+    },
+    {
+      "status": "error",
+      "task": "rodent_escape_bowl",
+      "error_type": "AttributeError",
+      "error": "module 'dm_control.locomotion.examples.basic_rodent_2020' has no attribute 'escape_bowl'",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "error",
+      "task": "rodent_maze_forage",
+      "error_type": "AttributeError",
+      "error": "module 'dm_control.locomotion.examples.basic_rodent_2020' has no attribute 'maze_forage'",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "error",
+      "task": "rodent_run_gaps",
+      "error_type": "AttributeError",
+      "error": "module 'dm_control.locomotion.examples.basic_rodent_2020' has no attribute 'run_gaps'",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "error",
+      "task": "rodent_two_touch",
+      "error_type": "AttributeError",
+      "error": "module 'dm_control.locomotion.examples.basic_rodent_2020' has no attribute 'two_touch'",
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "stacker_stack_2",
+      "real_obs_dim": 49,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "stacker_stack_4",
+      "real_obs_dim": 63,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": null
+    },
+    {
+      "status": "ok",
+      "task": "swimmer_swimmer15",
+      "real_obs_dim": 61,
+      "real_act_dim": 14,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "swimmer_swimmer6",
+      "real_obs_dim": 25,
+      "real_act_dim": 5,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "walker_run",
+      "real_obs_dim": 24,
+      "real_act_dim": 6,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "walker_stand",
+      "real_obs_dim": 24,
+      "real_act_dim": 6,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    },
+    {
+      "status": "ok",
+      "task": "walker_walk",
+      "real_obs_dim": 24,
+      "real_act_dim": 6,
+      "padded_obs_dim": 512,
+      "general_act_dim": 128,
+      "known_obs_dim_hint": 24
+    }
+  ]
+}
