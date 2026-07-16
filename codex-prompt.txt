@@ -75,4 +75,15 @@
 【4】注意，你应该根据当前的RAM和cuda 显存状况进行依次的实验部署，并持续监控各个task的情况，确保各个实验成功运行完毕；且各个实验的训练fps不应该低于现在正在运行的task的80%。
 【5】持续轮询和监视，时刻准备管理进程，同时时刻准备接收用户的新要求。不要自行结束和退出当前任务。
 
+【1】将你之前实现的的shrink方法进行修改，修改后成为一个新的mechanism，名为shrink_skip_last。当选用这个reset mechanism时，reset target的最后一层输出层不参与reset （例如，value head的最后的mean layer和std layer）。请你确认这一特性是否在之前的shrink方法中也被满足，如果不满足则需要你按照上述要求修改代码，停下之前的shrink mechanism的三个run，改为跑新版本的shrink方法（其他设置都和之前的一模一样）；如果本来就满足那就不用再修改了。
+【2】实现一个新的reset mechasnim，名为weight_scale。当指定完reset target后，和上面【1】的要求一样，对于最后的输出层不进行对应的操作。
+    1. 在某个run一开始初始化后（仅在这个run的一开始），就对于每一层的[W|b]拼接成的矩阵计算其F范数，进行保存（记为f_0）。
+    2. 在每个reset step （t），计算每一个需要被reset的layer的[W|b]构成的矩阵的F范数（f_t），并对于该层的W和b执行
+        W' = W / f_t * f_0
+        b' = b / f_t * f_0
+        的操作，进行f范数的归一化。
+    3. 这一个新的mechasnim，也根据/home/jiale/MBRL/ContinualMBRL-soft-reset/logdir/continual_dreamer_soft_reset_size1m中的设置，对于reset target=all进行3个seed的实验。其他的超参数等都不变。
+【3】上述实验都需要优先跑上。现在cuda空间还较多，可以多放几个实验。适当调高replaybuffer的chunk size，只要不OOM即可。
+【4】注意，还是要一直前台轮询，不要退出任务，直到用户给你明确指令允许退出。
+
 codex resume 019e9132-588a-7973-ad4f-02aad8ab6aad

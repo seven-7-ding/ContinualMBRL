@@ -261,6 +261,8 @@ class Replay:
     length = len(next(iter(values.values())))
     chunk = self._ensure_chunk_data(chunkid)
     available = chunk.length - index
+    if index < 0 or available < 0:
+      raise KeyError(chunkid)
     if available >= length:
       with elements.timer.section('set_slice'):
         result = chunk.update(index, length, values)
@@ -276,6 +278,8 @@ class Replay:
         while remaining > 0:
           chunk = self._ensure_chunk_data(chunk.succ)
           used = min(remaining, chunk.length)
+          if used <= 0:
+            raise KeyError(chunk.uuid)
           part = {k: v[:used] for k, v in values.items()}
           values = {k: v[used:] for k, v in values.items()}
           chunk.update(0, used, part)

@@ -335,3 +335,72 @@ Continue aggressive experiment deployment/monitoring after user requested using 
 [2026-07-09 17:53:49 HKT] accelerator cache512_to_4096 resumed pid=915293 old_pid=837109 gpu=7 wandb_id=51y36o4v target=no_reset seed=3000 old_step=330000 old_fps=7.36729615435187 chunks=640.0 loaded=512.0 logdir=logdir/continual_dreamer_soft_reset_walker_stand|walker_walk|walker_run_size1m/no_reset_50k_no_revive/seed_3000 log=logdir/continual_dreamer_soft_reset_walker_stand|walker_walk|walker_run_size1m/no_reset_50k_no_revive/seed_3000/accelerate_resume_cache512_to_4096_20260709T175349.log
 [2026-07-09 17:54:10 HKT] accelerator cache512_to_4096 resumed pid=915955 old_pid=838774 gpu=4 wandb_id=uy4pnc8z target=wm_head seed=3000 old_step=250000 old_fps=7.95877795581397 chunks=384.0 loaded=384.0 logdir=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000 log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000/accelerate_resume_cache512_to_4096_20260709T175410.log
 [2026-07-09 17:54:31 HKT] accelerator cache512_to_4096 resumed pid=916616 old_pid=837603 gpu=4 wandb_id=byk6m5d0 target=wm_head seed=3000 old_step=260000 old_fps=7.878883649109092 chunks=400.0 loaded=400.0 logdir=logdir/continual_dreamer_soft_reset_walker_stand|walker_walk|walker_run_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000 log=logdir/continual_dreamer_soft_reset_walker_stand|walker_walk|walker_run_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000/accelerate_resume_cache512_to_4096_20260709T175431.log
+[2026-07-09 20:05:50 HKT] foreground_watchdog SIGTERM dog pid=39268 target=ab_agent_head seed=2000 step=6000000 logdir=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_agent_head_a0p8_50k_no_revive/seed_2000
+[2026-07-09 20:21:55 HKT] resumed_one_paused_dog_after_sequence_stable pid=941264 gpu=1 cache_chunks=4096 wandb_id=l366x2gj target=agent_head seed=3000 logdir=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_3000 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_3000/resume_after_sequence_stable_gpu1_20260709T202155.log
+[2026-07-09 20:59:35 HKT] dog_cache8192_speed_retry pid=949542 old_pid=941264 gpu=1 wandb_id=l366x2gj target=agent_head seed=3000 old_step=3420000 old_fps=2.789778252064201 chunks=6642.0 loaded=4097.0 replay_ram=3.9219393273815513 logdir=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_3000 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_3000/resume_cache8192_for_dog_speed_20260709T205935.log
+[2026-07-10 01:05:36 HKT] patched replay stale update handling and chunk save marker ordering
+[2026-07-10 01:05:57 HKT] relaunched mixed no_reset seed_2000 pid=980937 gpu=0 wandb_id=bzwm8x6c log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/no_reset_50k_no_revive/seed_2000/resume_after_replay_stale_fix_20260710T010557.log
+[2026-07-10 01:06:51 HKT] relaunched mixed no_reset seed_2000 pid=981014 gpu=0 wandb_id=bzwm8x6c log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/no_reset_50k_no_revive/seed_2000/resume_after_replay_stale_fix_20260710T010651.log python=direct
+[2026-07-10 01:08:19 HKT] relaunched mixed no_reset seed_2000 pid=981298 gpu=0 wandb_id=bzwm8x6c log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/no_reset_50k_no_revive/seed_2000/resume_after_replay_stale_fix_nohup_20260710T010819.log python=direct_nohup
+[2026-07-10 01:09:29 HKT] launching mixed no_reset seed_2000 via persistent session gpu=0 wandb_id=bzwm8x6c log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/no_reset_50k_no_revive/seed_2000/resume_after_replay_stale_fix_session_20260710T010929.log
+[2026-07-10 01:18:43 HKT] fps_rebalance SIGTERM pid=170332 reason=reduce_4proc_gpus_for_policy_fps
+[2026-07-10 01:18:43 HKT] fps_rebalance SIGTERM pid=949542 reason=reduce_4proc_gpus_for_policy_fps
+[2026-07-10 01:18:43 HKT] fps_rebalance SIGTERM pid=916616 reason=reduce_4proc_gpus_for_policy_fps
+[2026-07-10 01:18:43 HKT] fps_rebalance SIGTERM pid=894783 reason=reduce_4proc_gpus_for_policy_fps
+[2026-07-10 01:19:22 HKT] fps_rebalance launch walker wm_head seed_3000 gpu=6 wandb_id=byk6m5d0 log=logdir/continual_dreamer_soft_reset_walker_stand|walker_walk|walker_run_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000/fps_rebalance_gpu4_to_gpu6_20260710T011922.log
+[2026-07-10 01:19:40 HKT] fps_rebalance launch mixed no_reset seed_3000 gpu=1 wandb_id=e18o339g log=logdir/continual_dreamer_soft_reset_quadruped_run|dog_stand|humanoid_stand_size1m/no_reset_50k_no_revive/seed_3000/fps_rebalance_gpu7_to_gpu1_20260710T011940.log
+2026-07-10 15:59:17 HKT
+Task: add shrink-only reset mechanism, launch continual_dreamer_soft_reset_size1m all seeds, reassess/resume dog with fps>=5-6, continue foreground monitoring.
+2026-07-10 16:01:02 HKT Added shrink reset mechanism and py_compile/source validation pending/completed.
+2026-07-10 16:02:11 HKT Launched shrink_all seeds 1000/2000/3000 on GPUs 2/4/5; sessions 42224/52439/80858.
+2026-07-10 16:02:49 HKT shrink_all seed_2000 failed during init with ptxas error 139; will retry after concurrent compiles settle.
+2026-07-10 16:09:22 HKT Archived failed shrink_all seed_2000/3000 logs after ptxas 139; retrying sequentially.
+2026-07-10 16:16:20 HKT shrink_all seed_2000 retry succeeded and entered training; launching seed_3000 retry.
+2026-07-10 16:17:07 HKT Resuming dog wm_head seed_3000 on GPU6 wandb=hip2sxzo log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_wm_head_a0p8_50k_no_revive/seed_3000/resume_20260710T161707.log.
+2026-07-10 16:17:07 HKT Resuming dog agent_head seed_3000 on GPU7 wandb=l366x2gj log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_3000/resume_20260710T161707.log.
+2026-07-10 16:23:55 HKT shrink_all seeds 1000/2000/3000 entered training; resumed dog wm_head seed_3000 and agent_head seed_3000 with original W&B ids.
+2026-07-10 16:29:37 HKT Resuming dog ab_wm_head seed_1000 on GPU1 wandb=vwcg73lw log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_wm_head_a0p8_50k_no_revive/seed_1000/resume_20260710T162937.log.
+2026-07-10 16:29:37 HKT Resuming dog ab_agent_head seed_3000 on GPU3 wandb=gzcgt5hb log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_agent_head_a0p8_50k_no_revive/seed_3000/resume_20260710T162937.log.
+2026-07-10 16:40:45 HKT Resuming dog agent_head seed_1000 on GPU0 wandb=f9nwzlpc log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_agent_head_a0p8_50k_no_revive/seed_1000/resume_20260710T164045.log.
+2026-07-10 17:50:35 HKT Detected shrink_all seed_1000/2000 crashed at 50k reset; investigating traceback before resuming.
+2026-07-10 17:51:12 HKT Fixed shrink non-floating params to copy current arrays, avoiding deleted Array reuse after reset.
+2026-07-10 17:52:03 HKT Started fixed-code shrink_all seed_1000/2000 resume sessions 26541/34552.
+2026-07-10 18:30:38 HKT Verified shrink_all seeds 1000/2000/3000 reset at 50k and continued to 60k metrics without deleted Array crash.
+2026-07-10 18:58:40 HKT Resuming dog no_reset seed_2000 on GPU2 wandb=dbxxkr3a cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/no_reset_50k_no_revive/seed_2000/resume_20260710T185840.log pre_ckpt=ckpt_pre_resume_20260710T185840.
+2026-07-10 19:04:43 HKT Relaunching dog no_reset seed_2000 on GPU2 wandb=dbxxkr3a cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/no_reset_50k_no_revive/seed_2000/resume_20260710T190443.log.
+2026-07-10 19:05:44 HKT Starting persistent-session dog no_reset seed_2000 on GPU2 wandb=dbxxkr3a cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/no_reset_50k_no_revive/seed_2000/resume_20260710T190544.log.
+2026-07-10 19:18:31 HKT Restarting slow dog agent_head seed_3000 with cache_chunks=4096 on GPU7 wandb=l366x2gj old_pid=1092203 pre_ckpt=ckpt_pre_cache4096_20260710T191831.
+2026-07-10 19:25:02 HKT Restarting slow dog ab_agent_head seed_3000 with cache_chunks=4096 on GPU3 wandb=gzcgt5hb old_pid=1098913 pre_ckpt=ckpt_pre_cache4096_20260710T192502.
+2026-07-10 19:30:31 HKT Restarting slow dog ab_wm_head seed_1000 with cache_chunks=4096 on GPU1 wandb=vwcg73lw old_pid=1098843 pre_ckpt=ckpt_pre_cache4096_20260710T193031.
+2026-07-10 19:46:37 HKT Restarting slow dog agent_head seed_1000 with cache_chunks=4096 on GPU0 wandb=f9nwzlpc old_pid=1104008 pre_ckpt=ckpt_pre_cache4096_20260710T194637.
+2026-07-10 19:57:22 HKT Retrying dog ab_wm_head seed_1000 with cache_chunks=4096 on GPU1 after ptxas139 wandb=vwcg73lw log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_wm_head_a0p8_50k_no_revive/seed_1000/resume_cache4096_retry_20260710T195722.log.
+2026-07-10 20:35:24 HKT Restarting slow dog wm_head seed_3000 with cache_chunks=4096 on GPU6 wandb=hip2sxzo old_pid=1092200 pre_ckpt=ckpt_pre_cache4096_20260710T203524.
+2026-07-11 02:22:05 HKT Resuming dog all seed_2000 on GPU5 wandb=4lhvj7tu cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_all_a0p8_50k_no_revive/seed_2000/resume_cache4096_20260711T022205.log.
+2026-07-11 03:03:50 HKT Resuming dog all seed_3000 on GPU6 wandb=l7a3vjsa cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_all_a0p8_50k_no_revive/seed_3000/resume_cache4096_20260711T030350.log.
+2026-07-11 04:05:53 HKT Resuming dog ab_wm_head seed_2000 on GPU0 wandb=y32bm3ax cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_wm_head_a0p8_50k_no_revive/seed_2000/resume_cache4096_20260711T040553.log.
+2026-07-11 04:21:42 HKT Resuming dog ab_wm_head seed_3000 on GPU7 wandb=izcd24vv cache_chunks=4096 log=logdir/continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/sandp_ab_wm_head_a0p8_50k_no_revive/seed_3000/resume_cache4096_20260711T042142.log.
+[2026-07-11 05:10:06 HKT] User relaxed fps target to 5-6; continued foreground monitoring. Priority mixed/walker runs are above threshold; dog agent_head seed_3000 remains slow (~2 fps) but healthy and not blocking priority runs.
+[2026-07-11 09:22:09 HKT] Walker priority queue completed; foreground monitor shows walker_priority=0 and mixed_priority=12 still active. Non-priority walker settings remain paused per user instruction.
+[2026-07-11] Implementing shrink_skip_last and weight_scale. Old shrink changed output layers and RMSNorm scales, so it did not meet the new semantics. Helper tests passed; size0.5m real runs reached reset step 1008 for both mechanisms. RMSNorm parameters are now excluded based on scale-preservation analysis. Starting new size1m production runs with cache_chunks=4096.
+[2026-07-12 10:14:25 HKT] continue foreground polling after context switch
+[2026-07-12 10:17:08 HKT] updated reset mechanism report verification to 750k reset
+[2026-07-12 10:26:39 HKT] monitor status: 25 target runs live, no fatal, no new launches because all GPUs occupied and GPU4 remains high-memory
+[2026-07-12 11:01:10 HKT] monitor status: dog no_reset seed_2000 refreshed to 1.38M; all active target runs still live; no launch slot available
+[2026-07-12 11:10:06 HKT] updated reset mechanism report verification to 800k reset
+[2026-07-12 12:00:09 HKT] monitor status: all target runs live; dog wm_head seed_3000 at 5.15M; RAM available 189GiB; no additional launches
+[2026-07-12 12:15:24 HKT] updated reset mechanism report verification to 850k reset
+[2026-07-12 13:08:39 HKT] monitor status: weight_scale seed_1000 switched correctly to hopper_hop and reports performance/1_hopper_hop/score at 1.02M
+2026-07-12 13:39:19 HKT updated RESET_MECHANISMS report: all six new-mechanism runs verified through 900k reset; foreground monitoring continues
+2026-07-12 14:30:13 HKT monitor heartbeat: all tracked new/dog/mixed runs live; no fatal; no completion threshold; no safe launch slot
+2026-07-12 15:36:07 HKT monitor heartbeat: all tracked runs live, no fatal/OOM; new mechanisms partly beyond 1M switch; dog closest completion wm_head seed_3000 at 5.26M
+2026-07-12 16:16:20 HKT updated RESET_MECHANISMS report: all six new-mechanism runs verified through 1M reset and walker->hopper switch
+2026-07-12 16:39:33 HKT all six new-mechanism runs now report hopper_hop score after 1M switch; all tracked runs live
+2026-07-13 13:23:48 HKT task: add redo diagnostics for layer linear W+b Frobenius norms and RMSNorm output norms, resume experiments, continue monitoring
+2026-07-13 13:25:50 HKT action: patch redo diagnostics start
+2026-07-13 13:26:43 HKT validation: py_compile redo diagnostics passed
+2026-07-13 13:30:29  action: rolling restart 25 runs for redo diagnostics; manifest=/home/jiale/MBRL/ContinualMBRL-soft-reset/logdir/redo_diag_restart_20260713T133028.jsonl
+2026-07-13 13:40:57 HKT validation: redo Linear_WB_FNorm and RMSNorm_Out_L2_Mean metrics observed in metrics.jsonl; one shrink seed1000 restart hit ptxas code 139 during policy compile
+2026-07-13 13:42:11 HKT validation: py_compile and diff-check passed after NORM_CALLBACK isolation
+2026-07-13 13:43:28  action: start v2 conservative rolling restart rows=25 source=/home/jiale/MBRL/ContinualMBRL-soft-reset/logdir/redo_diag_restart_20260713T133028.jsonl
+2026-07-13 15:35:20 HKT action: v2 rolling restart complete; corrected exact-logdir monitor started
+2026-07-13 15:49:35 HKT action: exact-logdir monitor restarted with fps-aware metric-age threshold

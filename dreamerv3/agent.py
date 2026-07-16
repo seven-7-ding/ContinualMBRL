@@ -192,9 +192,13 @@ class Agent(embodied.jax.Agent):
     if self.act_redo is not None:
       _acts = {}
       _old_cb = nn.LAYER_CALLBACK
+      _old_norm_cb = nn.NORM_CALLBACK
       nn.LAYER_CALLBACK = lambda t, name: (
         _acts.__setitem__(name, t) or _old_cb(t, name)
         if nn._SCAN_DEPTH[0] == 0 else _old_cb(t, name))
+      nn.NORM_CALLBACK = lambda t, name: (
+        _acts.__setitem__(name, t) or _old_norm_cb(t, name)
+        if nn._SCAN_DEPTH[0] == 0 else _old_norm_cb(t, name))
       # nn.LAYER_CALLBACK = lambda t, name: _acts.__setitem__(name, t) or _old_cb(t, name)
       _repfeat = sg(outs['repfeat'])
       # enc: no internal scan → mlp{i}/cnn{i} activations captured.
@@ -214,6 +218,7 @@ class Agent(embodied.jax.Agent):
       _ = self.con(_repf, 2)
       _ = self.pol(_imgf, 2)
       _ = self.val(_imgf, 2)
+      nn.NORM_CALLBACK = _old_norm_cb
       nn.LAYER_CALLBACK = _old_cb
       mets.update(self.act_redo.step(_acts))
 

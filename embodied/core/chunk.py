@@ -66,12 +66,12 @@ class Chunk:
     filename = elements.Path(directory) / self.filename
     if self.saved and filename.exists():
       return
-    self.saved = True
     data = {k: v[:self.length] for k, v in self.data.items()}
     with io.BytesIO() as stream:
       np.savez_compressed(stream, **data)
       stream.seek(0)
       filename.write(stream.read(), mode='wb')
+    self.saved = True
     log and print(f'Saved chunk: {filename.name}')
 
   @classmethod

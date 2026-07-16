@@ -89,6 +89,10 @@ defaults:
     #                 w = a * w + (1 - a) * w_fresh
     #   sandp_wo_opt -> same parameter update as sandp, but keep optimizer
     #                   state unchanged
+    #   shrink_skip_last -> scale selected floating-point parameters by alpha,
+    #                       excluding output projections and normalization
+    #   weight_scale -> restore each selected layer's joint kernel+bias
+    #                   Frobenius norm; skip outputs and normalization
     #   merge     -> soft merge with initial weights, w = a * w + (1 - a) * w0
     #   opt_only  -> keep parameter values unchanged and reset only optimizer
     #                 state for the selected parameter set

@@ -77,13 +77,18 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         'shrink_and_perturb': 'sandp',
         'sandp_wo_opt': 'sandp_wo_opt',
         'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
+        'shrink': 'shrink_skip_last',
+        'shrink_only': 'shrink_skip_last',
+        'shrink_skip_last': 'shrink_skip_last',
+        'weight_scale': 'weight_scale',
         'merge': 'merge',
         'opt_only': 'opt_only',
         'optimizer_only': 'opt_only',
     }
     mechanism = aliases.get(mechanism, mechanism)
     if mechanism not in (
-        'hard', 'sandp', 'sandp_wo_opt', 'merge', 'opt_only'):
+        'hard', 'sandp', 'sandp_wo_opt', 'shrink_skip_last',
+        'weight_scale', 'merge', 'opt_only'):
       raise ValueError(f'Unknown reset_mechanism: {mechanism}')
     return mechanism
 

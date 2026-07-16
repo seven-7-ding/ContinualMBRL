@@ -27,7 +27,7 @@ BASE_LOGDIR_ROOT="logdir"
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
 RESET_FREQUENCY=50000
-RESET_MECHANISM="sandp"  # Options: hard, sandp, merge, opt_only
+RESET_MECHANISM="sandp"  # Options: hard, sandp, sandp_wo_opt, shrink_skip_last, weight_scale, merge, opt_only
 RESET_ALPHA=0.8
 
 # Set REVIVE_EPOCH=0 to disable revive while still keeping periodic reset.

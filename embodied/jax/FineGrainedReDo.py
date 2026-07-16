@@ -82,6 +82,46 @@ def _is_output_layer(path: str) -> bool:
     return path.split('/')[-1] in _OUTPUT_LAYER_NAMES
 
 
+def _metric_name(path: str) -> str:
+    return path.replace('/', '_')
+
+
+def _nan_like_scalar():
+    return jnp.asarray(jnp.nan, f32)
+
+
+def _when_analyzing(should_analyze, compute):
+    return jax.lax.cond(
+        should_analyze, lambda _: f32(compute()), lambda _: _nan_like_scalar(), None)
+
+
+def _linear_wb_frobenius(ctx: Dict, path: str) -> jnp.ndarray:
+    total = jnp.square(f32(ctx[path + '/kernel'])).sum()
+    bkey = path + '/bias'
+    if bkey in ctx:
+        total += jnp.square(f32(ctx[bkey])).sum()
+    return jnp.sqrt(total)
+
+
+def _rmsnorm_output_l2_mean(activation: jnp.ndarray) -> jnp.ndarray:
+    act_2d = f32(activation).reshape((-1, activation.shape[-1]))
+    return jnp.linalg.norm(act_2d, axis=-1).mean()
+
+
+def _is_linear_param(path: str, value: jnp.ndarray) -> bool:
+    if path.startswith('opt/'):
+        return False
+    if path.endswith('/kernel'):
+        path = path[:-len('/kernel')]
+    return getattr(value, 'ndim', None) == 2
+
+
+def _is_rmsnorm_activation(path: str, ctx: Dict) -> bool:
+    if path.startswith('opt/'):
+        return False
+    return (path + '/scale') in ctx and 'norm' in path.split('/')[-1]
+
+
 def matrix_diversity_stats(x: jnp.ndarray, threshold: float = 0.99) -> Dict[str, jnp.ndarray]:
     """Rank and per-dimension std metrics for a [batch, dim] matrix."""
     x = f32(x)
@@ -160,6 +200,21 @@ class FGReDo(nj.Module):
         need_erank = 'erank' in self.log_item
         need_srank = 'srank' in self.log_item
 
+        for key, value in ctx.items():
+            if not key.endswith('/kernel') or not _is_linear_param(key, value):
+                continue
+            path = key[:-len('/kernel')]
+            lname = _metric_name(path)
+            metrics[f'{self.name}/Linear_WB_FNorm/{lname}'] = _when_analyzing(
+                should_analyze, lambda path=path: _linear_wb_frobenius(ctx, path))
+
+        for path, act in activations.items():
+            if not _is_rmsnorm_activation(path, ctx):
+                continue
+            lname = _metric_name(path)
+            metrics[f'{self.name}/RMSNorm_Out_L2_Mean/{lname}'] = _when_analyzing(
+                should_analyze, lambda act=act: _rmsnorm_output_l2_mean(act))
+
         for path in paths:
             act = activations[path]
             kkey = path + '/kernel'
@@ -170,7 +225,7 @@ class FGReDo(nj.Module):
             score = _neuron_score(act)
             norm_score = score / (score.mean() + 1e-9)
 
-            lname = path.replace('/', '_')
+            lname = _metric_name(path)
             # Gate ALL dormancy metrics: NaN when not at a frequency step
             # (NaN propagates through Agg and can be filtered at log time).
             for t in _TAU_LIST:

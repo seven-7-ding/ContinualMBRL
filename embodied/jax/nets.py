@@ -11,6 +11,7 @@ import numpy as np
 
 COMPUTE_DTYPE = jnp.bfloat16
 LAYER_CALLBACK = lambda tensor, name: tensor
+NORM_CALLBACK = lambda tensor, name: tensor
 
 # Depth counter: LAYER_CALLBACK captures are suppressed inside nj.scan bodies.
 _SCAN_DEPTH = [0]
@@ -410,6 +411,8 @@ class Norm(nj.Module):
     else:
       raise NotImplementedError(self.impl)
     x = x.astype(dtype)
+    if self.impl == 'rms':
+      x = NORM_CALLBACK(x, self.path)
     return x
 
   def _scale(self, shape, dtype):
@@ -683,4 +686,3 @@ class GRU(nj.Module):
     update = jax.nn.sigmoid(update + self.update_bias)
     carry = output = update * cand + (1 - update) * carry
     return carry, output
-
