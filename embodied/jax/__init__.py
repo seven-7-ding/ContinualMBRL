@@ -9,6 +9,7 @@ from .utils import Normalize
 from .utils import SlowModel
 
 from .opt import Optimizer
+from .wsc import WSC
 
 from .FineGrainedReDo import FGReDo
 from .FineGrainedReDo import FGGradientReDo
@@ -17,3 +18,5 @@ from .FineGrainedReDo import matrix_diversity_stats
 from . import nets
 from . import outs
 from . import opt
+from . import reset_targets
+from . import wsc

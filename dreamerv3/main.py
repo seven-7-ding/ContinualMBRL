@@ -181,6 +181,7 @@ def make_agent(config):
       logdir=config.logdir,
       seed=config.seed,
       jax=config.jax,
+      run=config.run,
       batch_size=config.batch_size,
       batch_length=config.batch_length,
       replay_context=config.replay_context,

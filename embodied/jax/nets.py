@@ -12,6 +12,10 @@ import numpy as np
 COMPUTE_DTYPE = jnp.bfloat16
 LAYER_CALLBACK = lambda tensor, name: tensor
 NORM_CALLBACK = lambda tensor, name: tensor
+WSC_ENABLED = False
+WSC_TARGET = 'all'
+WSC_USE_OUTPUT_SCALE = False
+WSC_OUTPUT_CALLBACK = lambda tensor, name, uses_scale: tensor
 
 # Depth counter: LAYER_CALLBACK captures are suppressed inside nj.scan bodies.
 _SCAN_DEPTH = [0]
@@ -139,6 +143,32 @@ def rms(xs):
   return jnp.sqrt(sumsq / f32(count))
 
 
+def _wsc_has_following_rmsnorm(path):
+  try:
+    from . import wsc
+    return wsc.following_rmsnorm_path(path) is not None
+  except Exception:
+    return False
+
+
+def _wsc_uses_output_scale(path):
+  if not WSC_ENABLED or not WSC_USE_OUTPUT_SCALE or _wsc_has_following_rmsnorm(path):
+    return False
+  try:
+    from . import reset_targets
+    return reset_targets.matches_target(path, WSC_TARGET)
+  except Exception:
+    return False
+
+
+def _wsc_scale(module, x):
+  uses_scale = _wsc_uses_output_scale(module.path)
+  if uses_scale:
+    scale = module.value('wsc_scale', jnp.ones, (), f32).astype(x.dtype)
+    x = x * scale
+  return WSC_OUTPUT_CALLBACK(x, module.path, uses_scale)
+
+
 def rope(x, ts=None, inverse=False, maxlen=4096):
   B, T, _, D = x.shape
   if ts is None:
@@ -260,6 +290,7 @@ class Linear(nj.Module):
     if self.bias:
       x += self.value('bias', init(self.binit), size).astype(x.dtype)
     x = x.reshape((*x.shape[:-1], *self.units))
+    x = _wsc_scale(self, x)
     return x
 
   def _scaled_winit(self, *args, **kwargs):
@@ -290,6 +321,7 @@ class BlockLinear(nj.Module):
     x = x.reshape((*x.shape[:-2], self.units))
     if self.bias:
       x += self.value('bias', init(self.binit), self.units).astype(x.dtype)
+    x = _wsc_scale(self, x)
     return x
 
   def _scaled_winit(self, *args, **kwargs):
@@ -332,6 +364,7 @@ class Conv2D(nj.Module):
         dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
     if self.bias:
       x += self.value('bias', init(self.binit), self.depth).astype(x.dtype)
+    x = _wsc_scale(self, x)
     return x
 
   def _scaled_winit(self, *args, **kwargs):

@@ -26,8 +26,27 @@
         * scale参数大小
         * 输出值的2范数的平均值（对于行为[batch_size, dim]的输出，先计算batch_size个长为dim的输出向量的2范数，再对于batch_size进行平均值计算）。
     2. 检查现在已有的汇报中，对于每一层的"grad_mean"指标汇报是在优化器进行stepsize调整后得到的“实际gradient”还是初始的gradient。这两个我都需要得到汇报。
-【4】完成上述的代码更新后，清理无关和冗余的代码。我需要你使用上面实现了的若干种WSC机制（target为all），分别跑以下的continual mojoco实验：
+【4】完成上述的代码更新后，清理无关和冗余的代码。我需要你使用上面实现了的若干种WSC机制（target为all），依次跑以下的continual mojoco实验：
     1. "walker_run|hopper_hop|fish_swim"，每个task各1m步，总共训练5轮。wandb汇报的project为https://wandb.ai/stevendiffdiff-/continual_dreamer_soft_reset_size1m/workspace?nw=nwuserstevendiffdiff
-    2. "humanoid_stand|humanoid_run"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_humanoid.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
-    3. "dog_stand|dog_walk|dog_trot"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_dog.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
+    2. "dog_stand|dog_walk|dog_trot"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_dog.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
+    3. "humanoid_stand|humanoid_run"，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_humanoid.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
     4. quadruped系列，具体配置参考/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_quadruped.sh，汇报到和这里一样的wandb project中，能够与已有的曲线进行对比。
+    * 具体的task超参数设置都和前面保持一致，但是要使用wsc机制；运行的log放到本logdir/文件夹中，组织方式和命名逻辑要一样。
+    * wandb的api：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
+    * 上述api不要同步到github远端，但是在本地的配置文件中进行记录。
+    * 先将所有设计好了的WSC策略在1.2.（即"walker_run|hopper_hop|fish_swim"和dog系列task实验）上进行运行，再做后面的task。
+    * 你不需要跑no_reset作为baseline了。baseline在wandb上已经有了。
+【5】先调通代码，确保代码逻辑和预想的一致；然后再将实验进行大规模调度和最大规模并行：
+    1. cuda0-7均可以调度
+    2. replaybuffer的chunk size推荐设置为4096，只要RAM充足，可以进一步适当增大；
+    3. 实验运行和调度时，要求cuda卡尽量显存平均分配、性能拉满；只要不出现RAM或显存OOM，则**尽量多的task同时并行**。
+    4. 时刻监督task的运行情况，**不允许临时中断task**，应该一直轮询监测各个run的运行情况，时刻准备修复bug/resume失败的实验；直到用户强制退出/提供新的指导和要求。
+
+新增一种wsc方法：wsc_no_scale_{init/constant/factor}
+【1】这种wsc不设置可训练的scale，即不管是哪一层，每次weight被update后，经过范数放缩后不做多余的事情了（scale一直是1.0，不可训练，不被更新）。
+【2】此外，使用wsc的方法时，在init时，直接使得各层都满足Frobinus范数的尺度要求（如果有要求的话）。
+【3】实验方面，在确保当前正在跑的实验的fps不会降到5.8以下的情况下，优先再部署：
+    /home/jiale/MBRL/ContinualMBRL-wsc/logdir/continual_dreamer_soft_reset_size1m中对应的实验，使用wsc_no_scale_constant的方法。
+【4】完成上述的修改后，继续轮询和管理实验，不要停。同时，修改checklist的skill要求：每次隔一定的时间，进行试验logging的清理：
+    1. 总结task_checklist.md、codex-cli-executor.log（如果有）中的实验记录，按照时间早晚顺序进行整理和总结。对于没有参考意义的内容直接删除；最关键、对于当前的的内容，直接整合到AGENT.md文件中（如果有）；只保留最精简的实验记录+最近几步的实验记录。使得整份文件的大小被控制在一定的范围内。
+    2. 同时，如果codex-cli-executor.log也存在，则task_checklist.md中不要记录有关实验进展等的记录，避免重复和冗余。

@@ -15,43 +15,8 @@ import numpy as np
 P = jax.sharding.PartitionSpec
 
 from . import internal
+from . import reset_targets
 from . import transform
-
-
-_OUTPUT_LAYER_NAMES = frozenset((
-    'logit', 'logits', 'obslogit', 'priorlogit',
-    'mean', 'stddev', 'pred', 'imgout'))
-_LAYER_PARAM_NAMES = frozenset(('kernel', 'bias'))
-
-
-def _layer_path(key):
-  parts = key.split('/')
-  if len(parts) < 2 or parts[-1] not in _LAYER_PARAM_NAMES:
-    return None
-  return '/'.join(parts[:-1])
-
-
-def _is_output_layer_param(key):
-  layer = _layer_path(key)
-  return bool(layer and layer.rsplit('/', 1)[-1] in _OUTPUT_LAYER_NAMES)
-
-
-def _is_norm_param(key):
-  parts = key.split('/')
-  return (
-      len(parts) >= 2 and parts[-1] in ('scale', 'shift') and
-      'norm' in parts[-2])
-
-
-def _initial_layer_norms(params):
-  squares = {}
-  for key, value in params.items():
-    layer = _layer_path(key)
-    if layer is None or _is_output_layer_param(key):
-      continue
-    value = np.asarray(value, dtype=np.float64)
-    squares[layer] = squares.get(layer, 0.0) + float(np.square(value).sum())
-  return {layer: float(np.sqrt(value)) for layer, value in squares.items()}
 
 
 @dataclasses.dataclass
@@ -219,10 +184,6 @@ class Agent(embodied.Agent):
 
     self._ckpt_groups = internal.grouped_ckpt_fns(
         self.params, self.jaxcfg.ckpt_chunksize)
-    self.initial_layer_norms = {}
-    self.initial_params_host = {
-        k: v for k, v in self.save()['params'].items() if not k.startswith('opt/')}
-    self.initial_layer_norms = _initial_layer_norms(self.initial_params_host)
     if self.jaxcfg.precompile:
       elements.print('Compiling train and report...', color='yellow')
       with self.train_mesh:
@@ -414,7 +375,6 @@ class Agent(embodied.Agent):
     data = {
         'params': params,
         'counters': counters,
-        'initial_layer_norms': self.initial_layer_norms,
     }
     return data
 
@@ -422,9 +382,6 @@ class Agent(embodied.Agent):
   def load(self, data, regex=None):
     params = data['params']
     assert params
-    self.initial_layer_norms = data.get(
-        'initial_layer_norms', self.initial_layer_norms)
-
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
@@ -464,321 +421,23 @@ class Agent(embodied.Agent):
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
 
-  def reset_params(self, mode='all', mechanism='hard', alpha=0.5):
-    """Reset selected parameters and matching optimiser state.
-
-    ``mechanism='hard'`` uses fresh initialization.
-    ``mechanism='sandp'`` blends with a newly re-initialized subnet.
-    ``mechanism='sandp_wo_opt'`` does the same but keeps optimiser state.
-    ``mechanism='shrink_skip_last'`` scales selected floating-point parameters
-    by alpha while preserving output projections and normalization parameters.
-    ``mechanism='weight_scale'`` restores each selected layer's joint kernel
-    and bias Frobenius norm to its value at initialisation, while preserving
-    output projections and normalization parameters.
-    ``mechanism='merge'`` interpolates with the initial model weights.
-    """
-    aliases = {
-        True: 'all',
-        'true': 'all',
-        'reset_all': 'all',
-        'reset_only_wm': 'wm',
-        'world_model': 'wm',
-        'worldmodel': 'wm',
-        'reset_only_agent': 'agent',
-        'reset_only_rssm': 'rssm',
-        'only_rssm': 'rssm',
-        'rssm': 'rssm',
-        'reset_all_heads': 'all_head',
-        'all_heads': 'all_head',
-        'all_head': 'all_head',
-        'reset_only_agent_heads': 'agent_head',
-        'reset_agent_heads': 'agent_head',
-        'agent_heads': 'agent_head',
-        'agent_head': 'agent_head',
-        'reset_only_wm_heads': 'wm_head',
-        'reset_wm_heads': 'wm_head',
-        'wm_heads': 'wm_head',
-        'wm_head': 'wm_head',
-        'entire_agent': 'entire_agent',
-        'entire_wm': 'entire_wm',
-        'encoder_only': 'encoder_only',
-        'reset_only_encoder': 'encoder_only',
-        'ab_encoder': 'ab_encoder',
-        'ab_rssm': 'ab_rssm',
-        'ab_agent_head': 'ab_agent_head',
-        'ab_wm_head': 'ab_wm_head',
-    }
-    mode = aliases.get(mode, mode)
-    mechanism = {
-        None: 'hard',
-        False: 'hard',
-        'false': 'hard',
-        'none': 'hard',
-        'hard': 'hard',
-        'reset': 'hard',
-        'sandp': 'sandp',
-        'shrink_and_perturb': 'sandp',
-        'sandp_wo_opt': 'sandp_wo_opt',
-        'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
-        'shrink': 'shrink_skip_last',
-        'shrink_only': 'shrink_skip_last',
-        'shrink_skip_last': 'shrink_skip_last',
-        'weight_scale': 'weight_scale',
-        'merge': 'merge',
-        'opt_only': 'opt_only',
-        'optimizer_only': 'opt_only',
-    }.get(mechanism, mechanism)
-    if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'all_head', 'agent_head', 'wm_head',
-        'entire_agent', 'entire_wm', 'encoder_only',
-        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
-      raise ValueError(f'Unknown reset mode: {mode}')
-    if mechanism not in (
-        'hard', 'sandp', 'sandp_wo_opt', 'shrink_skip_last',
-        'weight_scale', 'merge', 'opt_only'):
-      raise ValueError(f'Unknown reset mechanism: {mechanism}')
-    alpha = float(alpha)
-    if not 0.0 <= alpha <= 1.0:
-      raise ValueError(f'Reset alpha must be in [0, 1], got {alpha}')
-
-    # nj.Tree caches its treedef after the first call to read()/write().
-    # On a second call to _init_params(), the context starts without
-    # 'opt/state', so self.values returns {} and unflatten() asserts
-    # set({}) == set(opt_keys).  Reset treedef=None so Tree re-initialises
-    # from scratch during the upcoming _init_params() call.
-    opt = getattr(self.model, 'opt', None)
-    if opt is not None:
-      for sub in getattr(opt, '_submodules', {}).values():
-        if hasattr(sub, 'treedef'):
-          sub.treedef = None
-
-    init_seed = None
-    if mechanism in ('sandp', 'sandp_wo_opt'):
-      init_seed = self._next_reset_seed()
-
-    # Produce a fresh set of parameters with identical sharding.
-    with self.train_mesh:
-      new_params, _ = self._init_params(seed=init_seed)
-
-    with contextlib.ExitStack() as stack:
-      stack.enter_context(self.train_lock)
-      stack.enter_context(self.policy_lock)
-      unused = {}
-
-      matched_param_keys = {
-          k for k in self.params
-          if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
-      if mechanism in ('shrink_skip_last', 'weight_scale'):
-        matched_param_keys = {
-            k for k in matched_param_keys
-            if not _is_output_layer_param(k) and not _is_norm_param(k)}
-      if mechanism == 'weight_scale':
-        matched_param_keys = {
-            k for k in matched_param_keys if _layer_path(k) is not None}
-      param_reset_keys = (
-          matched_param_keys if mechanism != 'opt_only' else set())
-      reset_keys = [
-          k for k in self.params
-          if k in new_params and (
-              k in param_reset_keys or
-              (mechanism != 'sandp_wo_opt' and
-               self._opt_state_matches_param_reset(k, matched_param_keys)))]
-      if not reset_keys:
-        raise ValueError(f'No parameters matched reset mode: {mode}')
-
-      scale_factors = (
-          self._weight_scale_factors(param_reset_keys)
-          if mechanism == 'weight_scale' else {})
-      updated = {}
-      for index, key in enumerate(sorted(param_reset_keys)):
-        if mechanism == 'hard':
-          updated[key] = new_params[key]
-        else:
-          updated[key] = self._soft_reset_param(
-              key, self.params[key], new_params[key], mechanism, alpha, index,
-              scale_factors.get(_layer_path(key)))
-      for key in reset_keys:
-        if key.startswith('opt/'):
-          updated[key] = new_params[key]
-
-      replaced = {k: self.params[k] for k in reset_keys}
-      self.params.update(updated)
-      jax.tree.map(lambda x: x.delete(), replaced)
-      unused = {k: v for k, v in new_params.items() if k not in reset_keys}
-
-      if self.jaxcfg.enable_policy:
-        jax.tree.map(lambda x: x.delete(), self.policy_params)
-        policy_params = {}
-        for k in self.policy_keys:
-          try:
-            policy_params[k] = self.params[k].copy()
-          except RuntimeError:
-            if k in unused:
-              self.params[k] = unused.pop(k)
-              policy_params[k] = self.params[k].copy()
-            else:
-              raise
-        self.policy_params = internal.move(
-            policy_params, self.policy_params_sharding)
-        if self.pending_sync:
-          jax.tree.map(lambda x: x.delete(), self.pending_sync)
-          self.pending_sync = None
-      if unused:
-        jax.tree.map(lambda x: x.delete(), unused)
-      self.reset_counter += 1
+  def reset_params(self, *_, **__):
+    raise NotImplementedError(
+        'Legacy reset mechanisms were removed. Use WSC via '
+        '--run.reset_mechanism and --run.reset_target.')
 
   def _canonical_train_mode(self, mode):
-    aliases = {
-        None: 'all',
-        False: 'all',
-        'false': 'all',
-        'none': 'all',
-        'all': 'all',
-        'no_reset': 'all',
-        'wm': 'wm',
-        'world_model': 'wm',
-        'worldmodel': 'wm',
-        'reset_only_wm': 'wm',
-        'reset_only_rssm': 'rssm',
-        'only_rssm': 'rssm',
-        'rssm': 'rssm',
-        'reset_wm_heads': 'wm_head',
-        'reset_only_wm_heads': 'wm_head',
-        'wm_heads': 'wm_head',
-        'wm_head': 'wm_head',
-        'entire_agent': 'entire_agent',
-        'entire_wm': 'entire_wm',
-        'encoder_only': 'encoder_only',
-        'reset_only_encoder': 'encoder_only',
-        'agent': 'agent',
-        'reset_only_agent': 'agent',
-        'reset_agent_heads': 'agent_head',
-        'reset_only_agent_heads': 'agent_head',
-        'agent_heads': 'agent_head',
-        'agent_head': 'agent_head',
-        'reset_all_heads': 'all_head',
-        'all_heads': 'all_head',
-        'all_head': 'all_head',
-        'ab_encoder': 'ab_encoder',
-        'ab_rssm': 'ab_rssm',
-        'ab_agent_head': 'ab_agent_head',
-        'ab_wm_head': 'ab_wm_head',
-    }
-    mode = aliases.get(mode, mode)
-    if mode not in (
-        'all', 'wm', 'agent', 'rssm', 'wm_head', 'agent_head', 'all_head',
-        'entire_agent', 'entire_wm', 'encoder_only',
-        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
-      raise ValueError(f'Unknown train mode: {mode}')
-    return mode
+    if mode in (None, False, '', 'false', 'none'):
+      return 'all'
+    return reset_targets.canonical_target(mode)
 
   def _reset_key_matches(self, key, mode):
-    if mode == 'all':
-      return True
-    if mode == 'wm':
-      return self._matches_modules(key, ('enc', 'dyn', 'dec', 'rew', 'con'))
-    if mode == 'agent':
-      return self._matches_modules(
-          key,
-          ('pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm',
-           'advnorm'))
-    if mode == 'rssm':
-      return self._matches_modules(key, ('dyn',))
-    if mode == 'all_head':
-      return self._matches_modules(
-          key, ('dec', 'rew', 'con', 'pol', 'val', 'slowval'))
-    if mode == 'agent_head':
-      return self._matches_modules(key, ('pol', 'val', 'slowval', 'retnorm', 'valnorm', 'advnorm'))
-    if mode == 'wm_head':
-      return self._matches_modules(key, ('dec', 'rew', 'con'))
-    if mode == 'entire_agent':
-      return self._matches_modules(
-          key,
-          ('enc', 'dyn', 'pol', 'val', 'slowval', 'slowval_count',
-           'retnorm', 'valnorm', 'advnorm'))
-    if mode == 'entire_wm':
-      return self._matches_modules(key, ('enc', 'dyn', 'dec', 'rew', 'con'))
-    if mode == 'encoder_only':
-      return self._matches_modules(key, ('enc',))
-    if mode == 'ab_encoder':
-      return not self._matches_modules(key, ('enc',))
-    if mode == 'ab_rssm':
-      return not self._matches_modules(key, ('dyn',))
-    if mode == 'ab_agent_head':
-      return not self._matches_modules(key, ('pol', 'val', 'slowval', 'slowval_count', 'retnorm', 'valnorm', 'advnorm'))
-    if mode == 'ab_wm_head':
-      return not self._matches_modules(key, ('dec', 'rew', 'con'))
-    raise ValueError(f'Unknown reset key match mode: {mode}')
+    return reset_targets.matches_target(key, mode)
 
   def _matches_modules(self, key, modules):
     return any(
         key == module or key.startswith(f'{module}/') or f'/{module}/' in key
         for module in modules)
-
-  def _opt_state_matches_param_reset(self, key, param_keys):
-    if not key.startswith('opt/'):
-      return False
-    return any(key.endswith(f'/{param_key}') for param_key in param_keys)
-
-  def _soft_reset_param(
-      self, key, current_value, fresh_value, mechanism, alpha, reset_index,
-      weight_scale_factor=None):
-    if mechanism == 'hard':
-      return fresh_value
-
-    if jnp.issubdtype(current_value.dtype, jnp.floating):
-      del reset_index
-      blend = self._sharded_scalar(alpha, current_value)
-      keep = self._sharded_scalar(1.0 - alpha, current_value)
-      if mechanism in ('sandp', 'sandp_wo_opt'):
-        fresh_value = fresh_value.astype(current_value.dtype)
-        return current_value * blend + fresh_value * keep
-      if mechanism == 'shrink_skip_last':
-        del keep, fresh_value
-        return current_value * blend
-      if mechanism == 'weight_scale':
-        del keep, fresh_value
-        if weight_scale_factor is None:
-          raise ValueError(f'Missing weight scale factor for {key}')
-        return current_value * weight_scale_factor.astype(current_value.dtype)
-      if mechanism == 'merge':
-        initial = self.initial_params_host[key]
-        initial = internal.device_put(initial, current_value.sharding)
-        initial = initial.astype(current_value.dtype)
-        return current_value * blend + initial * keep
-    if mechanism == 'shrink_skip_last':
-      return current_value.copy()
-    if mechanism in ('sandp', 'sandp_wo_opt'):
-      return fresh_value
-    if mechanism == 'merge':
-      initial = self.initial_params_host[key]
-      return internal.device_put(initial, current_value.sharding)
-    raise ValueError(f'Unsupported reset mechanism: {mechanism}')
-
-  def _weight_scale_factors(self, param_keys):
-    layers = {}
-    for key in param_keys:
-      layers.setdefault(_layer_path(key), []).append(key)
-    factors = {}
-    for layer, keys in layers.items():
-      if layer not in self.initial_layer_norms:
-        raise KeyError(f'Missing initial Frobenius norm for layer {layer}')
-      ref = self.params[keys[0]]
-      # This runs only at sparse reset points. Computing the scalar reduction on
-      # host avoids compiling dozens of one-off square/sum GPU kernels at once.
-      squared_norm = 0.0
-      for key in keys:
-        value = np.asarray(jax.device_get(self.params[key]), dtype=np.float64)
-        squared_norm += float(np.square(value).sum())
-      norm = float(np.sqrt(squared_norm))
-      factor = self.initial_layer_norms[layer] / norm if norm > 0.0 else 1.0
-      factors[layer] = internal.device_put(
-          np.asarray(factor, np.float32), ref.sharding)
-    return factors
-
-  def _sharded_scalar(self, value, ref):
-    scalar = np.asarray(value, ref.dtype)
-    return internal.device_put(scalar, ref.sharding)
 
   def _take_outs(self, outs):
     outs = jax.tree.map(lambda x: x.__array__(), outs)

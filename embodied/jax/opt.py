@@ -7,6 +7,7 @@ import optax
 
 from . import internal
 from . import nets
+from . import wsc as wsc_lib
 
 f32 = jnp.float32
 i32 = jnp.int32
@@ -17,10 +18,11 @@ class Optimizer(nj.Module):
 
   summary_depth: int = 2
 
-  def __init__(self, modules, opt):
+  def __init__(self, modules, opt, lr_schedule=None):
     modules = modules if isinstance(modules, (list, tuple)) else (modules,)
     self.modules = modules
     self.opt = opt
+    self.lr_schedule = lr_schedule
     self.step = nj.Variable(jnp.array, 0, i32, name='step')
     self.scaling = (nets.COMPUTE_DTYPE == jnp.float16)
     if self.scaling:
@@ -28,7 +30,10 @@ class Optimizer(nj.Module):
       self.grad_scale = nj.Variable(jnp.array, 1e4, f32, name='grad_scale')
       self.good_steps = nj.Variable(jnp.array, 0, i32, name='good_steps')
 
-  def __call__(self, lossfn, *args, has_aux=False, gradient_redo=None, **kwargs):
+  def __call__(
+      self, lossfn, *args, has_aux=False, gradient_redo=None,
+      wsc_controller=None,
+      wsc_outputs=None, **kwargs):
     metrics = {}
 
     def lossfn2(*args, **kwargs):
@@ -49,6 +54,12 @@ class Optimizer(nj.Module):
     if nj.creating():
       print(self._summarize_params(counts, self.summary_depth))
 
+    if wsc_controller is not None and nj.creating():
+      params, init_wsc_metrics = wsc_controller.init_params(params)
+      if init_wsc_metrics:
+        nj.context().update(params)
+        metrics.update(init_wsc_metrics)
+
     axes = internal.get_data_axes()
     if axes:
       grads = jax.tree.map(lambda x: jax.lax.pmean(x, axes), grads)
@@ -57,14 +68,27 @@ class Optimizer(nj.Module):
       invscale = 1 / self.grad_scale.read()
       grads = jax.tree.map(lambda x: x * invscale, grads)
 
+    raw_grads = grads
+
     # Gradient-based ReDo: reset dormant neurons before the optimiser update.
     if gradient_redo is not None:
       redo_metrics, params, grads = gradient_redo.step(params, grads)
       metrics.update(redo_metrics)
 
+    if wsc_controller is not None:
+      grads = wsc_controller.zero_scale_grads(grads)
+
     state = self.sub('state', nj.Tree, self.opt.init, params)
     updates, new_state = self.opt.update(grads, state.read(), params)
-    nj.context().update(optax.apply_updates(params, updates))
+    new_params = optax.apply_updates(params, updates)
+    if wsc_controller is not None:
+      current_lr = None
+      if self.lr_schedule is not None:
+        current_lr = self.lr_schedule(self.step.read())
+      new_params, wsc_metrics = wsc_controller.step(
+          params, new_params, wsc_outputs, self.step.read(), current_lr)
+      metrics.update(wsc_metrics)
+    nj.context().update(new_params)
     state.write(new_state)
     grad_norm = optax.global_norm(grads)
     if self.scaling:
@@ -81,6 +105,10 @@ class Optimizer(nj.Module):
     metrics['grad_rms'] = nets.rms(grads)
     metrics['update_rms'] = nets.rms(updates)
     metrics['param_rms'] = nets.rms([x.values for x in self.modules])
+    if self.lr_schedule is not None:
+      metrics['learning_rate'] = f32(self.lr_schedule(self.step.read()))
+    if wsc_controller is not None and wsc_controller.active:
+      metrics.update(wsc_lib.layer_grad_metrics(raw_grads, updates))
     for module in self.modules:
       metrics[f'{self._module_metric_name(module)}_param_rms'] = nets.rms(
           module.values)

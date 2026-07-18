@@ -82,37 +82,24 @@ defaults:
     task_intervals: ''
     # Periodic model reset for continual runs.
     # reset_frequency is independent from agent.redo.frequency.
-    reset_frequency: 1e5
-    # reset_mechanism:
-    #   hard      -> replace selected parameters by fresh initialization
-    #   sandp     -> blend with a newly re-initialized subnet,
-    #                 w = a * w + (1 - a) * w_fresh
-    #   sandp_wo_opt -> same parameter update as sandp, but keep optimizer
-    #                   state unchanged
-    #   shrink_skip_last -> scale selected floating-point parameters by alpha,
-    #                       excluding output projections and normalization
-    #   weight_scale -> restore each selected layer's joint kernel+bias
-    #                   Frobenius norm; skip outputs and normalization
-    #   merge     -> soft merge with initial weights, w = a * w + (1 - a) * w0
-    #   opt_only  -> keep parameter values unchanged and reset only optimizer
-    #                 state for the selected parameter set
-    reset_mechanism: hard
-    # reset_target:
-    #   no_reset
-    #   agent_head
-    #   wm_head
-    #   all_head
-    #   entire_agent
-    #   entire_wm
-    #   only_rssm
-    #   encoder_only
-    #   all
-    #   ab_encoder
-    #   ab_rssm
-    #   ab_agent_head
-    #   ab_wm_head
-    reset_target: no_reset
-    reset_alpha: 0.5
+    reset_frequency: 0
+    # Active WSC mechanisms:
+    #   WSC_nograd_scale_init
+    #   WSC_grad_scale_init
+    #   WSC_nograd_scale_constant
+    #   WSC_grad_scale_constant
+    #   WSC_nograd_scale_lr
+    #   WSC_grad_scale_lr
+    #   WSC_nograd_scale_factor
+    #   WSC_grad_scale_factor
+    #   wsc_no_scale_init
+    #   wsc_no_scale_constant
+    #   wsc_no_scale_factor
+    # Set reset_mechanism to disabled/off/none to disable WSC.
+    reset_mechanism: disabled
+    # Reset/WSC targets are defined in embodied/jax/reset_targets.py.
+    # Built-ins: all, agent_head, wm_head, dyn, all_head.
+    reset_target: all
     # revive_strategy:
     #   fixed      -> always run exactly revive_epoch steps after reset
     #   threshold  -> stop when current loss <= last_loss * revive_threshold,
@@ -122,7 +109,7 @@ defaults:
     last_loss_num: 10
     revive_threshold: 1.0
     # Legacy compatibility alias. Prefer reset_target/reset_mechanism.
-    reset_mode: no_reset
+    reset_mode: ''
 
   jax:
     platform: cuda
@@ -136,6 +123,7 @@ defaults:
     debug: False
     expect_devices: 0
     enable_policy: True
+    precompile: True
     coordinator_address: ''
     ckpt_chunksize: 33554432  # 32MB per checkpoint group; avoids ptxas SIGSEGV on large models
 
@@ -173,6 +161,28 @@ defaults:
     repval_grad: True
     report: True
     report_gradnorms: False
+    wsc:
+      mechanism: disabled
+      target: all
+      # init: restore each layer to its initialization Frobenius norm.
+      # constant: restore each layer to target_norm.
+      # lr: multiply each selected layer by 1/(1 + lr * sqrt(param_count)).
+      # factor: multiply each selected layer by the current factor rule.
+      # wsc_no_scale_* modes do not create/train per-layer wsc_scale params.
+      norm_mode: init
+      target_norm: 1.0
+      scale_factor: 0.999
+      eps: 1e-8
+      factor_min: 0.01
+      factor_max: 100.0
+      scale_min: 1e-4
+      scale_max: 1e4
+      # For WSC_nograd_* only: delay WSC rescaling until this many optimizer
+      # updates have completed, while keeping wsc_scale frozen.
+      nograd_start_step: 10000
+      # Clamp the no-grad scale inverse adjustment per update.
+      scale_adjust_min: 0.1
+      scale_adjust_max: 10.0
     redo:
       # redo_enabled: run activation-based FGReDo (collects layer activations
       #   during training and resets dormant neurons every `frequency` steps).

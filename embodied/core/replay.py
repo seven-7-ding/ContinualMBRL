@@ -470,7 +470,9 @@ class Replay:
 
     filenames = [directory / x for x in names_ondisk[:numchunks]]
     if self.cache_chunks:
-      chunks = [chunklib.Chunk.metadata(filename) for filename in filenames]
+      load = bind(chunklib.Chunk.metadata, validate=True, error='none')
+      with ThreadPoolExecutor(16, 'replay_metadata_loader') as pool:
+        chunks = [x for x in pool.map(load, filenames) if x]
     else:
       load = bind(chunklib.Chunk.load, error='none')
       with ThreadPoolExecutor(16, 'replay_loader') as pool:

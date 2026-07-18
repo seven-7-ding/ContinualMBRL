@@ -6,3 +6,7 @@ __pycache__/
 MUJOCO_LOG.TXT
 ;
 logdir/
+.env*.local
+wandb/
+codex-*.*
+task_checklist.md

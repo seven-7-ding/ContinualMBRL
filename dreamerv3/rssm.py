@@ -173,6 +173,15 @@ class RSSM(nj.Module):
       x = nn.LAYER_CALLBACK(x, f'{self.path}/prior{i}')
     return self._logit('priorlogit', x)
 
+  def obslogit_from_deter_tokens(self, deter, tokens):
+    tokens = tokens.reshape((*deter.shape[:-1], -1))
+    x = tokens if self.absolute else jnp.concatenate([deter, tokens], -1)
+    for i in range(self.obslayers):
+      x = self.sub(f'obs{i}', nn.Linear, self.hidden, **self.kw)(x)
+      x = nn.act(self.act)(self.sub(f'obs{i}norm', nn.Norm, self.norm)(x))
+      x = nn.LAYER_CALLBACK(x, f'{self.path}/obs{i}')
+    return self._logit('obslogit', x)
+
   def _logit(self, name, x):
     kw = dict(**self.kw, outscale=self.outscale)
     x = self.sub(name, nn.Linear, self.stoch * self.classes, **kw)(x)

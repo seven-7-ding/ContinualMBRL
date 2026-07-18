@@ -1,3 +1,4 @@
+import math
 import re
 
 import chex
@@ -76,8 +77,14 @@ class Agent(embodied.jax.Agent):
 
     self.modules = [
         self.dyn, self.enc, self.dec, self.rew, self.con, self.pol, self.val]
+    self.wsc = self._make_wsc()
+    nn.WSC_ENABLED = bool(self.wsc and self.wsc.active)
+    nn.WSC_TARGET = self.wsc.parsed_target if self.wsc else 'all'
+    nn.WSC_USE_OUTPUT_SCALE = (
+        bool(self.wsc and self.wsc.active and self.wsc.uses_output_scale))
+    opt, lr_schedule = self._make_opt(**config.opt)
     self.opt = embodied.jax.Optimizer(
-        self.modules, self._make_opt(**config.opt), summary_depth=1,
+        self.modules, opt, lr_schedule=lr_schedule, summary_depth=1,
         name='opt')
 
     scales = self.config.loss_scales.copy()
@@ -173,7 +180,7 @@ class Agent(embodied.jax.Agent):
 
     metrics, (carry, entries, outs, mets) = self.opt(
         self.loss, carry, obs, prevact, training=True, has_aux=True,
-        gradient_redo=self.grad_redo)
+        gradient_redo=self.grad_redo, wsc_controller=self.wsc)
 
     should_analyze_data = self._should_analyze_data_diversity(training=True)
     if self.data_diversity_enabled:
@@ -184,6 +191,32 @@ class Agent(embodied.jax.Agent):
           jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
           jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
           should_analyze_data))
+
+    if self.wsc and self.wsc.active:
+      _wsc_outputs = {}
+      _old_wsc_cb = nn.WSC_OUTPUT_CALLBACK
+      nn.WSC_OUTPUT_CALLBACK = lambda t, name, uses_scale: (
+          _wsc_outputs.__setitem__(name, sg(t)) or _old_wsc_cb(t, name, uses_scale)
+          if uses_scale else _old_wsc_cb(t, name, uses_scale))
+      _repfeat = sg(outs['repfeat'])
+      _repf = self.feat2tensor(_repfeat)
+      _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
+      _flat = lambda x: x.reshape((-1, *x.shape[2:]))
+      _flatfeat = jax.tree.map(_flat, _repfeat)
+      _flatact = self._action_tensor(self._next_actions(prevact))
+      _flatact = _flatact.reshape((-1, _flatact.shape[-1]))
+      _ = self.dyn._core(
+          _flatfeat['deter'], _flatfeat['stoch'], _flatact)
+      _tokens = outs['tokens'].reshape((math.prod(outs['tokens'].shape[:2]), -1))
+      _ = self.dyn.obslogit_from_deter_tokens(_flatfeat['deter'], _tokens)
+      _ = self.dyn._prior(nn.cast(_repfeat['deter']))
+      _ = self.dec({}, _repfeat, obs['is_first'], training=False)
+      _ = self.rew(_repf, 2)
+      _ = self.con(_repf, 2)
+      _ = self.pol(_imgf, 2)
+      _ = self.val(_imgf, 2)
+      nn.WSC_OUTPUT_CALLBACK = _old_wsc_cb
+      mets.update(self.wsc.output_metrics(_wsc_outputs))
 
     # Activation-based ReDo: forward-only pass AFTER opt() using the repfeat
     # already computed by the training step.  Being outside nj.grad means
@@ -537,7 +570,40 @@ class Agent(embodied.jax.Agent):
       ramp = optax.linear_schedule(0.0, lr, warmup)
       sched = optax.join_schedules([ramp, sched], [warmup])
     chain.append(optax.scale_by_learning_rate(sched))
-    return optax.chain(*chain)
+    return optax.chain(*chain), sched
+
+  def _make_wsc(self):
+    run_cfg = getattr(self.config, 'run', None)
+    wsc_cfg = getattr(self.config, 'wsc', None)
+    mechanism = getattr(wsc_cfg, 'mechanism', 'disabled') if wsc_cfg else 'disabled'
+    target = getattr(wsc_cfg, 'target', 'all') if wsc_cfg else 'all'
+    if run_cfg is not None:
+      mechanism = getattr(run_cfg, 'reset_mechanism', mechanism)
+      target = getattr(run_cfg, 'reset_target', target)
+    enabled, scale_mode, norm_mode = embodied.jax.wsc.parse_mechanism(
+        mechanism, getattr(wsc_cfg, 'norm_mode', 'init') if wsc_cfg else 'init')
+    return embodied.jax.WSC(
+        enabled=enabled,
+        mechanism=mechanism,
+        target=target,
+        norm_mode=norm_mode,
+        target_norm=getattr(wsc_cfg, 'target_norm', 1.0) if wsc_cfg else 1.0,
+        scale_factor=getattr(wsc_cfg, 'scale_factor', 0.999) if wsc_cfg else 0.999,
+        eps=getattr(wsc_cfg, 'eps', 1e-8) if wsc_cfg else 1e-8,
+        factor_min=getattr(wsc_cfg, 'factor_min', 0.01) if wsc_cfg else 0.01,
+        factor_max=getattr(wsc_cfg, 'factor_max', 100.0) if wsc_cfg else 100.0,
+        scale_min=getattr(wsc_cfg, 'scale_min', 1e-4) if wsc_cfg else 1e-4,
+        scale_max=getattr(wsc_cfg, 'scale_max', 1e4) if wsc_cfg else 1e4,
+        nograd_start_step=(
+            getattr(wsc_cfg, 'nograd_start_step', 10000)
+            if wsc_cfg else 10000),
+        scale_adjust_min=(
+            getattr(wsc_cfg, 'scale_adjust_min', 0.1)
+            if wsc_cfg else 0.1),
+        scale_adjust_max=(
+            getattr(wsc_cfg, 'scale_adjust_max', 10.0)
+            if wsc_cfg else 10.0),
+        name='wsc')
 
 
 def imag_loss(

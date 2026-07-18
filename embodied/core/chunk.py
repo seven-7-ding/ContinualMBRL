@@ -100,9 +100,22 @@ class Chunk:
     return chunk
 
   @classmethod
-  def metadata(cls, filename):
+  def metadata(cls, filename, validate=False, error='raise'):
+    assert error in ('raise', 'none')
     time, uuid, succ, length = filename.stem.split('-')
     length = int(length)
+    if validate:
+      try:
+        with elements.Path(filename).open('rb') as f:
+          with np.load(f) as data:
+            _ = data.files
+      except Exception:
+        tb = ''.join(traceback.format_exception(sys.exception()))
+        print(f'Error checking chunk metadata {filename}:\n{tb}')
+        if error == 'raise':
+          raise
+        else:
+          return None
     chunk = cls(length)
     chunk.time = time
     chunk.uuid = elements.UUID(uuid)

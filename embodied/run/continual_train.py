@@ -3,6 +3,8 @@ from functools import partial as bind
 
 import elements
 import embodied
+from embodied.jax import reset_targets
+from embodied.jax import wsc as wsc_lib
 from embodied.jax.internal import stats
 import numpy as np
 
@@ -66,129 +68,36 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   revive_threshold = float(getattr(args, 'revive_threshold', 1.0))
 
   def canonical_reset_mechanism(mechanism):
-    aliases = {
-        None: 'hard',
-        False: 'hard',
-        'false': 'hard',
-        'none': 'hard',
-        'hard': 'hard',
-        'reset': 'hard',
-        'sandp': 'sandp',
-        'shrink_and_perturb': 'sandp',
-        'sandp_wo_opt': 'sandp_wo_opt',
-        'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
-        'shrink': 'shrink_skip_last',
-        'shrink_only': 'shrink_skip_last',
-        'shrink_skip_last': 'shrink_skip_last',
-        'weight_scale': 'weight_scale',
-        'merge': 'merge',
-        'opt_only': 'opt_only',
-        'optimizer_only': 'opt_only',
-    }
-    mechanism = aliases.get(mechanism, mechanism)
-    if mechanism not in (
-        'hard', 'sandp', 'sandp_wo_opt', 'shrink_skip_last',
-        'weight_scale', 'merge', 'opt_only'):
-      raise ValueError(f'Unknown reset_mechanism: {mechanism}')
-    return mechanism
+    if mechanism in (None, False, '', 'false', 'none', 'disabled', 'off'):
+      return 'disabled'
+    enabled, _, _ = wsc_lib.parse_mechanism(mechanism)
+    if not enabled:
+      return 'disabled'
+    return str(mechanism)
 
   def canonical_reset_target(target):
-    aliases = {
-        None: 'no_reset',
-        False: 'no_reset',
-        'false': 'no_reset',
-        'none': 'no_reset',
-        'no_reset': 'no_reset',
-        'agent_head': 'agent_head',
-        'agent_heads': 'agent_head',
-        'reset_agent_heads': 'agent_head',
-        'reset_only_agent_heads': 'agent_head',
-        'wm_head': 'wm_head',
-        'wm_heads': 'wm_head',
-        'reset_wm_heads': 'wm_head',
-        'reset_only_wm_heads': 'wm_head',
-        'entire_agent': 'entire_agent',
-        'entire_wm': 'entire_wm',
-        'encoder_only': 'encoder_only',
-        'reset_only_encoder': 'encoder_only',
-        'all_head': 'all_head',
-        'all_heads': 'all_head',
-        'reset_all_heads': 'all_head',
-        'ab_encoder': 'ab_encoder',
-        'ab_rssm': 'ab_rssm',
-        'ab_agent_head': 'ab_agent_head',
-        'ab_wm_head': 'ab_wm_head',
-        'only_rssm': 'rssm',
-        'reset_only_rssm': 'rssm',
-        'rssm': 'rssm',
-        True: 'all',
-        'true': 'all',
-        'all': 'all',
-        'reset_all': 'all',
-        # Backward-compatible internal targets.
-        'agent': 'agent',
-        'reset_only_agent': 'agent',
-        'wm': 'wm',
-        'world_model': 'wm',
-        'worldmodel': 'wm',
-        'reset_only_wm': 'wm',
-    }
-    target = aliases.get(target, target)
-    if target not in (
-        'no_reset', 'agent_head', 'wm_head', 'all_head',
-        'rssm', 'all', 'agent', 'wm', 'entire_agent', 'entire_wm',
-        'encoder_only',
-        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
-      raise ValueError(f'Unknown reset_target: {target}')
-    return target
+    return reset_targets.canonical_target(target)
 
   def legacy_reset_mode_target(mode):
-    aliases = {
-        None: None,
-        False: None,
-        'false': None,
-        'none': None,
-        'no_reset': 'no_reset',
-        'reset_only_agent': 'agent',
-        'agent': 'agent',
-        'reset_only_wm': 'wm',
-        'wm': 'wm',
-        'world_model': 'wm',
-        'worldmodel': 'wm',
-        'reset_only_rssm': 'rssm',
-        'rssm': 'rssm',
-        'reset_all_heads': 'all_head',
-        'all_heads': 'all_head',
-        'reset_only_agent_heads': 'agent_head',
-        'reset_agent_heads': 'agent_head',
-        'agent_heads': 'agent_head',
-        'reset_only_wm_heads': 'wm_head',
-        'reset_wm_heads': 'wm_head',
-        'wm_heads': 'wm_head',
-        True: 'all',
-        'true': 'all',
-        'all': 'all',
-        'reset_all': 'all',
-    }
-    target = aliases.get(mode, mode)
-    if target is None:
+    if mode in (None, False, '', 'false', 'none'):
       return None
-    return canonical_reset_target(target)
+    return canonical_reset_target(mode)
 
   reset_mechanism = canonical_reset_mechanism(
-      getattr(args, 'reset_mechanism', 'hard'))
+      getattr(args, 'reset_mechanism', 'disabled'))
   reset_target = canonical_reset_target(
-      getattr(args, 'reset_target', 'no_reset'))
+      getattr(args, 'reset_target', 'all'))
   legacy_target = legacy_reset_mode_target(getattr(args, 'reset_mode', None))
-  if reset_target == 'no_reset' and reset_mechanism == 'hard' and legacy_target:
+  if legacy_target:
     reset_target = legacy_target
-  reset_alpha = float(getattr(args, 'reset_alpha', 0.5))
   if reset_frequency < 0:
     raise ValueError(f'reset_frequency must be >= 0, got {reset_frequency}')
   if revive_epoch < 0:
     raise ValueError(f'revive_epoch must be >= 0, got {revive_epoch}')
-  if not 0.0 <= reset_alpha <= 1.0:
-    raise ValueError(f'reset_alpha must be in [0, 1], got {reset_alpha}')
+  if reset_frequency > 0 and reset_mechanism == 'disabled':
+    raise ValueError(
+        'run.reset_frequency > 0 requires an enabled WSC mechanism. '
+        'Set run.reset_frequency=0 to disable reset scheduling.')
   if revive_strategy not in ('fixed', 'threshold'):
     raise ValueError(
         f"revive_strategy must be 'fixed' or 'threshold', got "
@@ -232,13 +141,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       loss_windows['agent'][name].append(val)
 
   def loss_bucket(mode):
-    if mode in ('wm', 'rssm', 'wm_head', 'entire_wm', 'encoder_only'):
+    if mode in ('dyn', 'wm_head'):
       return 'wm'
-    if mode in ('agent', 'agent_head'):
+    if mode in ('agent_head',):
       return 'agent'
-    if mode in (
-        'all', 'all_head', 'entire_agent',
-        'ab_encoder', 'ab_rssm', 'ab_agent_head', 'ab_wm_head'):
+    if mode in ('all', 'all_head'):
       return 'all'
     raise ValueError(f'Unknown loss bucket mode: {mode}')
 
@@ -393,143 +300,21 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
         f'target_losses={target_losses}, final_losses={final_losses}).')
 
   def periodic_reset():
-    if reset_target == 'no_reset':
-      print(
-          f'Reset trigger reached at step {step.value}, '
-          'reset_target=no_reset so no reset/revive executed.')
-      return
-    if reset_target == 'rssm':
-      last_loss = get_last_loss('rssm')
-      agent.reset_params('rssm', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset RSSM at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('rssm', revive_epoch, 'RSSM revive', last_loss)
-      return
-    if reset_target == 'agent':
-      last_loss = get_last_loss('agent')
-      agent.reset_params(
-          'agent', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset agent at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('agent', revive_epoch, 'agent revive', last_loss)
-      return
-    if reset_target == 'agent_head':
-      last_loss = get_last_loss('agent_head')
-      agent.reset_params(
-          'agent_head', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset agent heads at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('agent_head', revive_epoch, 'agent head revive', last_loss)
-      return
-    if reset_target == 'wm':
-      last_loss = get_last_loss('wm')
-      agent.reset_params('wm', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset world model at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('wm', revive_epoch, 'world model revive', last_loss)
-      return
-    if reset_target == 'wm_head':
-      last_loss = get_last_loss('wm_head')
-      agent.reset_params(
-          'wm_head', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset world model heads at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('wm_head', revive_epoch, 'world model head revive', last_loss)
-      return
-    if reset_target == 'entire_agent':
-      last_loss = get_last_loss('entire_agent')
-      agent.reset_params(
-          'entire_agent', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset entire agent at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('entire_agent', revive_epoch, 'entire agent revive', last_loss)
-      return
-    if reset_target == 'entire_wm':
-      last_loss = get_last_loss('entire_wm')
-      agent.reset_params(
-          'entire_wm', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset entire world model at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('entire_wm', revive_epoch, 'entire world model revive', last_loss)
-      return
-    if reset_target == 'encoder_only':
-      last_loss = get_last_loss('encoder_only')
-      agent.reset_params(
-          'encoder_only', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset encoder only at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('encoder_only', revive_epoch, 'encoder revive', last_loss)
-      return
-    if reset_target == 'all_head':
-      last_loss = get_last_loss('all_head')
-      agent.reset_params(
-          'all_head', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset all heads at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('all_head', revive_epoch, 'all head revive', last_loss)
-      return
-    if reset_target == 'ab_encoder':
-      last_loss = get_last_loss('ab_encoder')
-      agent.reset_params(
-          'ab_encoder', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset all except encoder at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('ab_encoder', revive_epoch, 'all-but-encoder revive', last_loss)
-      return
-    if reset_target == 'ab_rssm':
-      last_loss = get_last_loss('ab_rssm')
-      agent.reset_params(
-          'ab_rssm', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset all except dynamics at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive('ab_rssm', revive_epoch, 'all-but-dynamics revive', last_loss)
-      return
-    if reset_target == 'ab_agent_head':
-      last_loss = get_last_loss('ab_agent_head')
-      agent.reset_params(
-          'ab_agent_head', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset all except agent heads at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. last_loss={last_loss}')
-      revive(
-          'ab_agent_head', revive_epoch, 'all-but-agent-head revive',
-          last_loss)
-      return
-    if reset_target == 'ab_wm_head':
-      last_loss = get_last_loss('ab_wm_head')
-      agent.reset_params(
-          'ab_wm_head', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset all except world model heads at step {step.value} with '
-          f'mechanism={reset_mechanism} alpha={reset_alpha}. '
-          f'last_loss={last_loss}')
-      revive(
-          'ab_wm_head', revive_epoch, 'all-but-world-model-head revive',
-          last_loss)
+    print(
+        f'WSC schedule reached at step {step.value}: '
+        f'mechanism={reset_mechanism}, target={reset_target}. '
+        'WSC is applied after every optimizer update; no legacy parameter '
+        'reset is executed.')
+    if revive_epoch <= 0:
       return
     if reset_target == 'all':
-      last_wm_loss = get_last_loss('wm')
-      last_agent_loss = get_last_loss('agent')
-      agent.reset_params('all', mechanism=reset_mechanism, alpha=reset_alpha)
-      print(
-          f'Reset full system at step {step.value} with mechanism='
-          f'{reset_mechanism} alpha={reset_alpha}. '
-          f'last_wm_loss={last_wm_loss}, last_agent_loss={last_agent_loss}')
-      revive('wm', revive_epoch, 'world model revive', last_wm_loss)
-      revive('agent', revive_epoch, 'agent revive', last_agent_loss)
-      return
-    raise ValueError(f'Unsupported reset_target: {reset_target}')
+      revive('wm', revive_epoch, 'world model WSC revive', get_last_loss('wm'))
+      revive(
+          'agent', revive_epoch, 'agent WSC revive', get_last_loss('agent'))
+    else:
+      revive(
+          reset_target, revive_epoch, f'{reset_target} WSC revive',
+          get_last_loss(reset_target))
 
   cp = elements.Checkpoint(logdir / 'ckpt')
   cp.step = step
@@ -655,7 +440,6 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
       logger.add({'reset/frequency': float(reset_frequency)})
-      logger.add({'reset/alpha': float(reset_alpha)})
       logger.add({'fps/policy': policy_fps.result()})
       logger.add({'fps/train': train_fps.result()})
       logger.add({'timer': elements.timer.stats()['summary']})

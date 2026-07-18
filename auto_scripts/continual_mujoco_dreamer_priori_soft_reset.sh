@@ -26,11 +26,11 @@ BASE_LOGDIR_ROOT="logdir"
 # Training configuration
 TRAIN_RATIO=1024
 TASK_INTERVAL=1000000
-RESET_FREQUENCY=50000
-RESET_MECHANISM="sandp"  # Options: hard, sandp, sandp_wo_opt, shrink_skip_last, weight_scale, merge, opt_only
-RESET_ALPHA=0.8
+RESET_FREQUENCY=0
+RESET_TARGET="all"
+WSC_TARGET_NORM=1.0
+WSC_SCALE_FACTOR=0.999
 
-# Set REVIVE_EPOCH=0 to disable revive while still keeping periodic reset.
 REVIVE_EPOCH=0
 REVIVE_STRATEGY="threshold"
 
@@ -45,39 +45,30 @@ GRAD_LOG_ITEM="log+erank+srank"
 # EXTRA_ARGS="--run.log_every 5000 --batch_size 8"
 EXTRA_ARGS=""
 
-RESET_FREQUENCY_K="$((RESET_FREQUENCY / 1000))k"
-RESET_ALPHA_TAG="${RESET_ALPHA//./p}"
-if (( REVIVE_EPOCH > 0 )); then
-    RESET_FREQUENCY_TAG="${RESET_FREQUENCY_K}_revive_${REVIVE_EPOCH}_${REVIVE_STRATEGY}"
-else
-    RESET_FREQUENCY_TAG="${RESET_FREQUENCY_K}_no_revive"
-fi
 # ============= Settings Definition =============
-# Format: "reset_target|seed"
+# Format: "wsc_mechanism|seed"
 declare -a SETTINGS=(
-    # "no_reset|1000"
-    # "no_reset|2000"
-    # "no_reset|3000"
-
-    # "agent_head|1000"
-    # "agent_head|2000"
-    # "agent_head|3000"
-
-    # "wm_head|1000"
-    # "wm_head|2000"
-    # "wm_head|3000"
-
-    # "only_rssm|1000"
-    # "only_rssm|2000"
-    # "only_rssm|3000"
-
-    # "all_head|1000"
-    # "all_head|2000"
-    # "all_head|3000"
-
-    "all|1000"
-    "all|2000"
-    "all|3000"
+    "no_wsc|1000"
+    "no_wsc|2000"
+    "no_wsc|3000"
+    "WSC_nograd_scale_init|1000"
+    "WSC_nograd_scale_init|2000"
+    "WSC_nograd_scale_init|3000"
+    "WSC_grad_scale_init|1000"
+    "WSC_grad_scale_init|2000"
+    "WSC_grad_scale_init|3000"
+    "WSC_nograd_scale_constant|1000"
+    "WSC_nograd_scale_constant|2000"
+    "WSC_nograd_scale_constant|3000"
+    "WSC_grad_scale_constant|1000"
+    "WSC_grad_scale_constant|2000"
+    "WSC_grad_scale_constant|3000"
+    "WSC_nograd_scale_factor|1000"
+    "WSC_nograd_scale_factor|2000"
+    "WSC_nograd_scale_factor|3000"
+    "WSC_grad_scale_factor|1000"
+    "WSC_grad_scale_factor|2000"
+    "WSC_grad_scale_factor|3000"
 )
 
 # ============= Initialize =============
@@ -87,19 +78,16 @@ declare -a FAILED_DEPLOYMENTS=()
 
 # ============= Run Experiments =============
 echo "============================================"
-echo "Starting Continual DreamerV3 Priori Soft Reset Experiments"
+echo "Starting Continual DreamerV3 Priori WSC Experiments"
 echo "============================================"
 echo "Total runs requested: $TOTAL_RUNS"
 echo "Using GPUs: ${CUDA_DEVICES[@]}"
 echo "Max runs per GPU launched by this script: $MAX_RUNS_PER_GPU"
 echo "Model size: $MODEL_SIZE"
 echo "Tasks: $TASK_STRING"
-echo "Reset mechanism: $RESET_MECHANISM"
-if (( RESET_FREQUENCY == TASK_INTERVAL )); then
-    echo "Reset schedule: reset once at each task boundary"
-else
-    echo "Reset schedule: reset every $RESET_FREQUENCY env steps"
-fi
+echo "WSC target: $RESET_TARGET"
+echo "WSC target norm: $WSC_TARGET_NORM"
+echo "WSC scale factor: $WSC_SCALE_FACTOR"
 if (( REVIVE_EPOCH > 0 )); then
     echo "Revive schedule: up to $REVIVE_EPOCH updates after each reset ($REVIVE_STRATEGY)"
 else
@@ -109,21 +97,26 @@ echo ""
 
 # Iterate over all settings
 for setting_spec in "${SETTINGS[@]}"; do
-    IFS='|' read -r reset_target seed <<< "$setting_spec"
-
-    if [[ "$reset_target" == "no_reset" ]]; then
-        reset_tag="no_reset"
-    elif [[ "$RESET_MECHANISM" == "hard" || "$RESET_MECHANISM" == "opt_only" ]]; then
-        reset_tag="${RESET_MECHANISM}_${reset_target}"
-    else
-        reset_tag="${RESET_MECHANISM}_${reset_target}_a${RESET_ALPHA_TAG}"
+    IFS='|' read -r wsc_mechanism seed <<< "$setting_spec"
+    reset_tag="wsc_${wsc_mechanism}_${RESET_TARGET}"
+    reset_mechanism="$wsc_mechanism"
+    reset_target="$RESET_TARGET"
+    if [[ "$wsc_mechanism" == "no_wsc" || "$wsc_mechanism" == "disabled" || "$wsc_mechanism" == "off" || "$wsc_mechanism" == "none" ]]; then
+        reset_tag="no_wsc"
+        reset_mechanism="disabled"
+        reset_target="all"
     fi
 
     # Create log directory
-    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${reset_tag}_${RESET_FREQUENCY_TAG}/seed_$seed"
+    logdir="$BASE_LOGDIR_ROOT/${PREFIX}_${MODEL_SIZE}/${reset_tag}/seed_$seed"
+    if [[ "${FRESH_RERUN:-0}" == "1" && -e "$logdir" ]]; then
+        backup="${logdir}.failed.$(date +%Y%m%d_%H%M%S)"
+        echo "FRESH_RERUN moving existing $logdir -> $backup"
+        mv "$logdir" "$backup"
+    fi
     if [ -s "$logdir/train.log" ]; then
         FAILED_DEPLOYMENTS+=("$setting_spec")
-        echo "SKIPPED: $reset_target with seed $seed (existing log: $logdir/train.log)"
+        echo "SKIPPED: $wsc_mechanism with seed $seed (existing log: $logdir/train.log)"
         continue
     fi
     mkdir -p "$logdir"
@@ -140,11 +133,12 @@ for setting_spec in "${SETTINGS[@]}"; do
         --run.train_ratio "$TRAIN_RATIO"
         --run.task_interval "$TASK_INTERVAL"
         --run.reset_frequency "$RESET_FREQUENCY"
-        --run.reset_mechanism "$RESET_MECHANISM"
+        --run.reset_mechanism "$reset_mechanism"
         --run.reset_target "$reset_target"
-        --run.reset_alpha "$RESET_ALPHA"
         --run.revive_epoch "$REVIVE_EPOCH"
         --run.revive_strategy "$REVIVE_STRATEGY"
+        --agent.wsc.target_norm "$WSC_TARGET_NORM"
+        --agent.wsc.scale_factor "$WSC_SCALE_FACTOR"
         --seed "$seed"
         --egl_device "$device_num"
         --agent.imag_length "$AGENT_IMAG_LENGTH"
@@ -160,9 +154,9 @@ for setting_spec in "${SETTINGS[@]}"; do
     fi
 
     # Execute
-    echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $reset_target seed $seed -> GPU $device_num"
+    echo "[$((run_counter + 1))/$TOTAL_RUNS] Launching: $wsc_mechanism target $RESET_TARGET seed $seed -> GPU $device_num"
     echo "   Task order: $TASK_STRING"
-    echo "   Config: continual_dmc_priori $MODEL_SIZE reset_mechanism=$RESET_MECHANISM reset_target=$reset_target reset_alpha=$RESET_ALPHA reset_frequency=$RESET_FREQUENCY revive_epoch=$REVIVE_EPOCH"
+    echo "   Config: continual_dmc_priori $MODEL_SIZE reset_mechanism=$reset_mechanism reset_target=$reset_target reset_frequency=$RESET_FREQUENCY revive_epoch=$REVIVE_EPOCH"
     echo "   ReDo: act_log_item=$ACT_LOG_ITEM grad_log_item=$GRAD_LOG_ITEM"
     if [[ -n "$EXTRA_ARGS" ]]; then
         echo "   Extra args: $EXTRA_ARGS"
@@ -184,8 +178,8 @@ echo "Successfully deployed: $run_counter / $TOTAL_RUNS"
 if [ ${#FAILED_DEPLOYMENTS[@]} -gt 0 ]; then
     echo "Failed to deploy: ${#FAILED_DEPLOYMENTS[@]} experiments"
     for failed in "${FAILED_DEPLOYMENTS[@]}"; do
-        IFS='|' read -r reset_target seed <<< "$failed"
-        echo "   - Reset Target: $reset_target, Seed: $seed"
+        IFS='|' read -r wsc_mechanism seed <<< "$failed"
+        echo "   - WSC Mechanism: $wsc_mechanism, Seed: $seed"
     done
 else
     echo "All experiments deployed successfully!"
