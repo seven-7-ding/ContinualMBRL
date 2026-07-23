@@ -1,98 +1,80 @@
 # Agent Notes
 
-- User requested a persistent autonomous implementation and experiment loop for WSC.
-- Preserve unrelated existing modification in `codex-prompt.txt`.
-- Do not commit or expose the wandb API key. Store any local secret in ignored local files only.
-- CUDA 0-7 may be used. First validate code, then schedule WSC experiments on walker/hopper/fish and dog tasks before humanoid/quadruped.
-- Avoid intentionally interrupting running experiments; monitor and resume failed runs when possible.
-- Detached background processes started via `exec_command` were cleaned by the environment. Keep long schedulers in foreground `exec_command` sessions and poll them with `write_stdin`.
-- Active/relevant phase12 sessions as of 2026-07-17 01:01 HKT:
-  - Original phase12 `no_wsc` scheduler shell `98939`/PID `2108943` was stopped; its walker baseline child processes remain active under PID 1.
-  - Targeted dog `no_wsc` scheduler shell `14079`/PID 2288350 was stopped at 01:31 HKT to prevent queued seed_3000 from auto-launching under low-FPS/I-O pressure; seed_1000 and seed_2000 child processes remain active under PID 1.
-  - Supplemental walker `WSC_grad_scale_lr` scheduler session: `18188`, currently monitoring seed_2000 and seed_3000.
-  - Supplemental dog `WSC_grad_scale_lr` scheduler session: `72838`, currently monitoring seed_2000 and seed_3000.
-  - The initial `WSC_lr` scheduler shell `41143` was intentionally killed after its first four child runs were active to avoid duplicate queued launches; its child runs remain valid and active.
-  - Old repair sessions `39181`, `45887`, `75918`, and `45371` have exited and only correspond to discarded/deprecated repair attempts.
-- Known repaired issue: `WSC_nograd_scale_init` initially produced NaNs in `dyn/deter`; WSC factor and no-grad scale finite clamps were added, then the failed walker seeds were relaunched.
-- New requirement: monitor each run's `fps/policy` and `fps/train`; both should be above 6. If not, diagnose the bottleneck and adjust code/scheduling.
-- Last FPS check at 2026-07-17 01:18 HKT: 27 current runs with metrics, 0 no-FPS, 0 below `fps/policy=6`; current minimum policy FPS is about 6.50. Dog `no_wsc` seed_1000/seed_2000 first metrics are healthy, but do not manually launch seed_3000 while the global low-water mark remains this close to 6.
-- User requested rerunning the baseline as `no_wsc`, with wandb/logdir group exactly `no_wsc`. Scheduler scripts were updated so mechanism `no_wsc` uses `run.reset_mechanism=disabled`, `run.reset_target=all`, and logdir group `no_wsc`.
-- Old-code walker `WSC_nograd_scale_factor` seeds 1000, 2000, and 3000 failed with NaNs in `dyn/deter`; seed 1000 repair is running in session `39181`, seed 2000 fresh repair in `45371`, and seed 3000 fresh repair in `75918`. If seed 1000 fails again, rerun it with `FRESH_RERUN=1`.
-- Factor/nograd repairs have passed first metrics under current code: seed 1000 policy FPS 10.04 at 60k, seed 2000 8.58 at 10k, seed 3000 9.61 at 10k.
-- Scheduler supports `FRESH_RERUN=1` to move an existing failed logdir to `*.failed.TIMESTAMP` before relaunch, avoiding corrupted replay/ckpt reuse.
-- New user request at 2026-07-16 20:20 HKT: investigate/fix why `WSC_*_init` sometimes shows middle `val_head` layer updates stuck at 0, then continue experiments.
-- Root cause found: value head output layers can initialize to all zero (`outscale: 0.0`), so old `WSC_*_init` recorded `target_norm=0` and kept the head zero after every optimizer step, which blocked gradient/update flow into middle `val_mlp` layers.
-- Current WSC init rule after 2026-07-16 20:31 HKT: if a layer's initial Frobenius norm is <= eps/all-zero, record `target_norm=1.0`; otherwise record the actual initial norm. Minimal validation printed `zero_target 1.0` and preserved a nonzero target at `3.464102`.
-- Running Python processes launched before this WSC init rule remain on their old loaded code. Treat existing `WSC_*_init` experiment results as affected and fresh-rerun them after current FPS/concurrency pressure improves; do not interrupt active runs.
-- Scheduler note: `FRESH_RERUN=1` now overrides completed old logdirs, and `DRY_RUN=1` only prints intended moves/launches without touching real files. At 20:46 HKT a dry-run briefly moved two walker seed_1000 init logdirs; they were restored immediately.
-- When FPS/concurrency margin allows, rerun affected init experiments with a targeted scheduler invocation, for example:
-  `FRESH_RERUN=1 PHASE=phase12 WSC_MECHANISMS_OVERRIDE='WSC_nograd_scale_init WSC_grad_scale_init' SEEDS_OVERRIDE='1000 2000 3000' MAX_PARALLEL=<small_safe_value> CUDA_DEVICES_OVERRIDE='<chosen_gpus>' auto_scripts/wsc_continual_scheduler.sh`
-- Additional fix at 22:12 HKT: `initial_layer_norms()` alone was insufficient because old checkpoints/active processes can already contain persisted `target_norm=0` in the WSC `target_norms` tree. `WSC.step()` now sanitizes target norms after reading the tree, so loaded zero targets are treated as `1.0`. CPU dummy `WSC_grad_scale_init` smoke showed `target=1.0`, `factor≈0.99998`, and nonzero `val_mlp_linear0` raw/update metrics.
-- Cleanup policy added by user: promptly delete local logdir and W&B records only for experiments confirmed useless and not resumable, such as bug-killed runs, stale `.failed.*` dirs, and debug seeds. Do not delete records for experiments that stopped due to scheduling/resource reasons and are expected to resume.
-- Cleanup performed around 22:30 HKT: deleted W&B remote records for confirmed old WSC init bug runs that existed remotely, stopped old `WSC_*_init` processes with `target_norm=0`, and deleted local old init/failed/debug logdirs. Keep newly launched fixed-code dog `WSC_grad_scale_init` seed_2000/3000.
-- 22:45 HKT nograd instability handling: user reported `wsc_WSC_nograd_scale_constant_all` numerical instability. Paused main scheduler 2071965, killed all active old `WSC_nograd_*` training processes, deleted their local logdirs and matching W&B remote runs where present, patched nograd WSC to start only after optimizer update 10000, and clamped no-grad scale inverse adjustment to `[0.1, 10]`. Warmup smoke passed with `nograd_started=0`, factor=1, scale=1 before 10000 updates. Main scheduler was resumed; new post-fix nograd runs are valid to keep and monitor.
-- 22:56 HKT fixed-code dog `WSC_grad_scale_init` seed_2000/3000 metrics validate the init fix in real training: `val_head_logits target_norm=1.0`, factor about 1.035, nonzero `val_mlp_linear0` raw grad, nonzero `train/value_mean`, and policy FPS above 10. Continue waiting for post-fix dog nograd WSC metrics before adding more repair/rerun load.
-- 23:10 HKT all dog post-fix nograd factor seeds have first metrics: `nograd_started=0.0`, `factor=1.0`, `scale=1.0` at step 10000, policy FPS 9.04-11.62, train FPS above 7k. No current-log errors.
-- 23:12 HKT supplemental walker rerun session `54350` started for missing/deleted fixed-code init/nograd groups. Keep this at low parallelism; do not start more supplementals unless FPS margin stays comfortably above 6 after first metrics.
-- 23:36 HKT user replaced fixed factor experiments with `WSC_lr`: factor is `1 / (1 + lr * sqrt(N))`, where `N` is layer `[w|b]` parameter count and `lr` is the current optimizer schedule value. Old `WSC_*_factor` code/interface remains, but no factor experiments should be scheduled.
-- 23:46 HKT old factor experiments were stopped/deleted: active factor PIDs killed, 8 W&B factor runs deleted where IDs existed, 9 local factor seed dirs plus empty groups removed. Old WSC scheduler shells with factor queues were killed; non-factor training was kept. `no_wsc` scheduler remains active.
-- 23:49 HKT `WSC_lr` scheduler session `41143` started. Monitor first metrics for `opt/wsc/lr/*`, `opt/wsc/lr_param_count/*`, factor formula, FPS > 6, and no NaNs. First four walker lr jobs are pending first metrics.
-- 00:03 HKT first walker `WSC_lr` metrics validate the formula: grad seed1000 `lr=3.748239e-05`, `N=16575`, factor `0.9951985`, expected `0.9951975`. Nograd seeds 1000/2000/3000 are correctly in warmup with `nograd_started=0.0` and factor `1.0`.
-- 00:07 HKT old lr scheduler shell `41143` was killed after its 4 child runs were active to avoid duplicate later launches and allow manual higher parallelism. New supplemental schedulers: `18188` for walker grad lr seed2000/3000, `55106` for initial dog lr, and later `72838` for final dog grad lr seed2000/3000.
-- 00:58 HKT all phase12 `WSC_lr` replacement runs on walker/dog have first metrics. Formula validation passed for walker grad/nograd lr and dog grad lr. Dog nograd lr is intentionally `factor=1.0` at step 10000 because no-grad WSC warmup has not started yet. Latest global scan: 25 runs with FPS, 0 no-FPS, 0 below threshold, no current-log errors, and no active `--run.reset_mechanism WSC_*factor` process.
-- 01:01 HKT stopped old no_wsc scheduler shell after its walker baseline children were orphaned safely. Started targeted dog `no_wsc` scheduler session `14079`; seeds 1000 and 2000 are active. Watch their first metrics before launching seed 3000 or later-phase jobs.
-- 01:06 HKT adding dog `no_wsc` seed1000/2000 reduced the global low-water policy FPS to about 6.50, still above threshold but close. Do not launch seed3000 or later-phase jobs unless FPS margin improves.
-- 01:18 HKT dog `no_wsc` seed1000/2000 first metrics are healthy: policy FPS 11.57/13.00. Global minimum remains 6.50, so leave seed3000 queued in session `14079` instead of launching it manually.
-- 01:23 HKT walker `WSC_grad_scale_constant` seed2000 has a low latest point at step 260k (`fps/policy=4.39`, `fps/train=4491`). Previous points were healthy, and replay/checkpoint file mtimes cluster around the low point, so likely checkpoint/replay I/O transient. Wait for step 270k before making code/scheduling changes; keep all new launches frozen.
-- 01:29 HKT a second walker constant run showed the same replay/checkpoint-I/O low-FPS pattern. `auto_scripts/wsc_continual_scheduler.sh` now accepts optional `RUN_SAVE_EVERY`; default is unchanged, but use `RUN_SAVE_EVERY=1800` or higher for future launches if checkpoint I/O keeps pushing FPS below 6.
-- 01:31 HKT all three walker `WSC_grad_scale_constant` seeds have latest low-FPS points around 4.2-4.4, aligned with checkpoint/replay writes. Stopped dog `no_wsc` scheduler shell to prevent auto-launch of seed3000; do not add any new jobs until low-FPS runs recover in later metrics.
-- 01:38 HKT I/O bottleneck confirmed: `find ... -mmin -2` counted about 1500 recently modified replay `.npz` files under the walker constant group. CPU/GPU are not saturated enough to explain the drop. Keep scheduling frozen and prefer `RUN_SAVE_EVERY=1800` or higher for future launches.
-- 01:45 HKT memory has large headroom (~385GiB available). Future WSC scheduler launches now default to `REPLAY_CACHE_CHUNKS=1024` instead of 512 to reduce replay eviction/writeback. Current active runs keep their original setting.
-- 01:54 HKT applied non-interrupting `ionice -c2 -n0` to current dreamerv3 processes to reduce I/O queueing from replay/checkpoint writes. Low-FPS walker constant PIDs 2079087/2080073/2080924 verify as best-effort priority 0.
-- 02:18 HKT replay diagnosis: each low-FPS walker constant run has ~608 replay chunks and ~270-290MB replay data. Current active `cache_chunks=512` forces eviction/writeback; future `cache_chunks=1024` should keep this scale resident in RAM. Active jobs cannot be safely hot-patched.
-- 02:22 HKT walker constant seed2000 advanced to step 270k but dropped further to policy FPS 2.86. This confirms sustained I/O bottleneck for active cache=512 jobs. Low-FPS constant PIDs 2079087/2080073/2080924 remain `ionice` prio 0; other dreamerv3 processes were moved to best-effort prio 4. Keep monitoring recovery.
-- 02:23 HKT walker `no_wsc` seed1000/seed3000 also fell below FPS threshold. All currently bad walker PIDs 2079087/2080073/2080924/2108950/2110049 are now `ionice` prio 0; other dreamerv3 processes stay prio 4. This reinforces that future launches need `cache_chunks=1024`.
-- 02:30 HKT controlled resume completed for five persistent low-FPS walker runs. Restarted same logdirs, preserving checkpoint/replay and W&B run IDs, with `replay.cache_chunks=1024` and `run.save_every=1800`. New PIDs: constants 2300854/2301221/2301914, no_wsc 2302534/2303154. Watch first resumed metrics before adding work.
-- 02:58 HKT restarted runs are recovering, but walker `no_wsc` seed2000 (old cache=512) dropped to FPS 3.22 at step 310k. It was stopped after checkpoint `20260717T024945F777444` and relaunched on GPU4 with cache=1024/save_every=1800 in scheduler session `80080`.
-- 03:17 HKT walker `no_wsc` seed2000 recovered after restart: step 320k policy FPS 10.03/train FPS 10267. Full scan: 27 runs with FPS, bad=0, no current errors, lowest policy FPS 6.40. Keep additional launches frozen until the low-water mark improves beyond the narrow margin.
-- 03:27 HKT post-restart stability has held across repeated scans: 27 metric-bearing runs, bad=0, no current errors. Lowest policy FPS remains dog seed3000 around 6.40-6.44, so do not launch dog no_wsc seed3000 or later phases yet.
-- 03:42 HKT post-restart stability continues: 27 runs with FPS, bad=0, no current errors. Low-water mark is still only about 6.42, so scheduling remains frozen.
-- 04:01 HKT health check: 27 runs with FPS, bad=0, no current errors, no active `WSC_*_factor` training process. Lowest policy FPS is about 6.39 on dog `WSC_grad_scale_constant` seed3000, so keep dog `no_wsc` seed3000 and later phases frozen until FPS margin improves.
-- 04:48 HKT previous global monitor session `2409` exited normally after its planned loop. New global monitor session `22341` started; first scan has 27 runs with FPS, bad=0, no_fps=0, lowest policy FPS about 6.38. Continue no-new-launch freeze.
-- 05:43 HKT global monitor session `22341` exited normally after its planned loop. New global monitor session `47801` started; first scan has 27 runs, bad=0, no_fps=0, lowest policy FPS about 6.37. Continue strict no-new-launch freeze.
-- 06:39 HKT global monitor session `47801` exited normally after its planned loop. New global monitor session `70642` started; first scan has 27 runs, bad=0, no_fps=0, lowest policy FPS about 6.38. Continue strict no-new-launch freeze.
-- 07:12 HKT low-FPS recovery: dog `WSC_grad_scale_init` seed2000 and dog `WSC_grad_scale_constant` seed3000 dropped below policy FPS 6 due to replay/cache I/O with `cache_chunks=512`. Both were stopped after recent checkpoints and resumed in-place with `cache_chunks=1024` and `run.save_every=1800`. New PIDs: seed2000 init `2325742` on GPU6, seed3000 constant `2326578` on GPU5. Watch for first new metrics before deciding on more action.
-- 07:25 HKT low-FPS recovery expanded to dog `WSC_grad_scale_constant` seed2000. Stopped old PID `2207069` after checkpoint `20260717T072522F760432`; resumed same logdir/W&B run in scheduler session `88655` on GPU4 with `cache_chunks=1024` and `run.save_every=1800`. Watch for compile/load completion and first new metrics.
-- 07:31 HKT dog `WSC_grad_scale_constant` seed2000 resume verified: W&B run `gko41jt7`, checkpoint `20260717T072522F760432`, training loop entered. All three low-FPS dog restarts are running; old bad metrics remain until replacement metrics are logged.
-- 07:39 HKT dog `WSC_grad_scale_init` seed3000 also fell below policy FPS 6. Stopped old PID `2203233` after checkpoint `20260717T073855F061917`; resumed same logdir/W&B run in scheduler session `57622` on GPU7 with `cache_chunks=1024` and `run.save_every=1800`. Watch for compile/load completion and first new metrics.
-- 07:45 HKT dog `WSC_grad_scale_init` seed3000 resume verified: W&B run `p0rgicxu`, checkpoint `20260717T073855F061917`, training loop entered. Old bad metric remains until replacement metric is logged.
-- 08:03 HKT additional low-FPS recovery: dog `WSC_grad_scale_constant` seed1000 stopped old PID `2206288` after checkpoint `20260717T075508F417169`, resumed in scheduler session `16386` on GPU3 with cache=1024/save_every=1800. Walker `WSC_grad_scale_init` seed2000 stopped old PID `2243425` and resumed from checkpoint `20260717T074740F585061` in scheduler session `63531` on GPU2 with cache=1024/save_every=1800.
-- 08:08 HKT walker `WSC_grad_scale_init` seed2000 resume verified: W&B run `yul4oivy`, checkpoint `20260717T074740F585061`, training loop entered. Old bad metric remains until replacement metric is logged.
-- 08:20 HKT walker `WSC_nograd_scale_lr` seed2000/seed3000 fell just below policy FPS 6. Stopped old PIDs `2257752`/`2258542` after checkpoints `20260717T081857F735763`/`20260717T081930F203836`; resumed same logdirs/W&B runs in sessions `62128` GPU1 and `68245` GPU6 with cache=1024/save_every=1800.
-- 08:22 HKT walker `WSC_grad_scale_init` seed1000 fell below policy FPS 6. Stopped old PID `2242920` and resumed from checkpoint `20260717T081707F196599` in scheduler session `35676` on GPU0 with cache=1024/save_every=1800.
-- 08:36 HKT walker `WSC_nograd_scale_lr` seed1000 fell below policy FPS 6. Stopped old PID `2257242` after checkpoint `20260717T083329F567496`; resumed same logdir/W&B run in session `37022` on GPU0 with cache=1024/save_every=1800.
-- 08:46 HKT recovery status: global monitor has 27 runs, no_fps=0, bad=0. Lowest policy FPS remains narrow at about 6.23, so do not launch queued dog no_wsc seed3000 or later phases yet.
-- 09:14 HKT walker `WSC_grad_scale_lr` seed2000 and dog `WSC_grad_scale_lr` seed3000 fell below policy FPS 6. Stopped old PIDs `2267509`/`2282580`; resumed same logdirs/W&B runs in sessions `86875` GPU4 and `61950` GPU5 with cache=1024/save_every=1800.
-- 09:22 HKT walker `WSC_grad_scale_lr` seed1000 fell below policy FPS 6. Stopped old PID `2259278` after checkpoint `20260717T091950F459328`; resumed same logdir/W&B run in session `78420` on GPU7 with cache=1024/save_every=1800.
-- 09:26 HKT repeated dog `WSC_grad_scale_lr` seed3000 tracebacks were from a confirmed 0-byte replay chunk, not WSC math. The bad chunk was moved to `replay/.corrupt/` and the run/checkpoint/W&B record was preserved for resume.
-- 09:27 HKT `embodied/core/chunk.py` and `embodied/core/replay.py` now validate npz metadata in cache-chunk replay loading and skip corrupt chunks before registration. This prevents metadata-only cache mode from repeatedly sampling unusable files after resume.
-- 09:28 HKT walker `WSC_grad_scale_lr` seed3000 fell below policy FPS 6. Stopped old cache512 PID `2268464` after checkpoint `20260717T092544F461634`; resumed same logdir/W&B run in session `44025` on GPU7 with cache=1024/save_every=1800.
-- 09:31 HKT dog `WSC_grad_scale_lr` seed3000 process `2349797` still had the corrupt chunk registered in memory from before the patch and kept logging `FileNotFoundError`. Stopped it and scheduler `2349785`, then resumed the same logdir/W&B run in session `81558` on GPU5 from checkpoint `20260717T090644F093996` with patched replay loading.
-- 09:34 HKT dog `WSC_grad_scale_lr` seed2000 fell below policy FPS 6 on old cache=512. Stopped PID `2282098` and scheduler `2282087` after checkpoint `20260717T092109F474909`; resumed same logdir/W&B run in session `19275` on GPU2 with cache=1024/save_every=1800.
-- 09:42 HKT lr recovery metrics are healthy: walker grad lr seed1000/seed3000 recovered to policy FPS 8.22/7.60, dog grad lr seed2000 to 6.87, dog grad lr seed3000 to 7.10. No new corrupted replay errors in the resumed dog seed3000 tail.
-- 09:50 HKT dog `no_wsc` baseline seed1000/seed2000 fell below policy FPS 6 on old cache=512. Stopped PIDs `2288357`/`2288895` after checkpoints `20260717T094916F921160` and `20260717T094945F871807`; resumed same logdirs/W&B runs in session `23088` on GPUs 0/1 with cache=1024/save_every=1800.
-- 10:18 HKT global health recovered to bad=0 with lowest policy FPS about 7.04 after the dog no_wsc cache1024 resumes. Dog no_wsc seed1000 recovered to policy FPS 9.71; seed2000 recovered by the 10:18 global scan.
-- 10:19 HKT dog `no_wsc` seed3000 was still missing. Started it in scheduler session `78321` on GPU3 with cache=1024/save_every=1800. Do not launch humanoid/quadruped until this seed writes first metrics and global FPS remains stable.
-- 10:58 HKT dog `no_wsc` seed3000 first metric is healthy: step 10k policy FPS 10.40, train FPS 8468.65. Global monitor reports 28 metric-bearing runs, no_fps=0, bad=0, lowest policy FPS about 7.13. Keep monitoring before expanding to humanoid/quadruped.
-- 12:23 HKT latest user change supersedes `WSC_lr` experiments. `WSC_*_factor` now computes `factor = 1 / (1 + lr)` using the current optimizer lr. Scheduler defaults are back to `no_wsc`, init, constant, and factor mechanisms. All active phase12 experiments were stopped/reset locally by moving the two active project logdirs into `logdir/reset_archive_20260717_122336_factor_lr_reset/`; start new runs from empty active logdirs and continue FPS/error monitoring.
-- 12:25 HKT phase12 reset relaunch is active via detached scheduler PID `2385816`, log `logdir/scheduler/phase12_factor_reset_20260717_122546.log`, with `MAX_PARALLEL=8`, CUDA 0-7, `replay.cache_chunks=1024`, and `run.save_every=1800`. Ignore the earlier non-detached scheduler log `phase12_factor_reset_20260717_122407.log`; its two partial no_wsc dirs were moved into the reset archive.
+## Current Objective
 
-- 13:36 HKT latest: healthy archived walker no_wsc/grad_constant/grad_init seeds restored; dog archived grad_constant and grad_init seed2000/3000 restored; reset dog no_wsc kept per user. All local wsc_lr dirs removed. Active restore launch uses TASK_SPECS_OVERRIDE format task::project::interval only. Killed an accidental task_interval=6 duplicate for walker no_wsc seed2000 and relaunched seed2000 correctly.
+- `wsc_no_scale_{init,constant,factor}` is implemented and validated.
+- Continue monitoring/managing active continual Dreamer experiments.
+- Keep `task_checklist.md` compact. Since `codex-cli-executor.log` exists, experiment polling/progress belongs there, while only durable operational context belongs here.
 
-## Current Operating Policy, 2026-07-18
+## WSC No-Scale Semantics
 
-- Latest requested implementation work: add `wsc_no_scale_{init,constant,factor}`. These mechanisms must not create or train per-layer `wsc_scale`; scale is implicit `1.0`. After each optimizer update, only layer `kernel`/`bias` Frobenius rescaling is applied.
-- For WSC modes with a required target Frobenius scale (`init` and `constant`), selected layers should be normalized at initialization too, before the first optimizer update.
-- Experiment launch safety for the latest request: before deploying new `wsc_no_scale_constant` jobs under `logdir/continual_dreamer_soft_reset_size1m`, verify current active experiment FPS will not drop below 5.8.
-- Logging policy: keep `task_checklist.md` compact. Since `codex-cli-executor.log` exists, record experiment polling/progress there instead of duplicating it in the checklist. Periodically summarize useful operational facts into this file and delete low-value checklist/log detail when it grows.
-- Current priority policy before the latest no-scale request: P1 is `no_wsc` and `WSC_grad_scale_constant_all`; P2 is `WSC_grad_scale_factor_all` and `WSC_grad_scale_init_all`; `WSC_nograd_*` is lowest priority and should stay stopped unless there is clear FPS headroom.
+- `wsc_no_scale_*` mechanisms must not create or train per-layer `wsc_scale`.
+- Effective output scale is implicit `1.0`.
+- After optimizer updates, no-scale WSC only rescales selected layer `kernel`/`bias` parameters according to the selected Frobenius mode.
+- For WSC modes with a target Frobenius scale (`init` and `constant`), selected layers are normalized at parameter creation before the first optimizer update.
+
+## Validation Evidence
+
+- Focused validation passed on 2026-07-18:
+  - `python -m compileall embodied/jax/wsc.py embodied/jax/nets.py embodied/jax/opt.py dreamerv3/agent.py`
+  - CPU smoke: `wsc_no_scale_{init,constant,factor}` parse correctly.
+  - CPU smoke: `wsc_no_scale_constant` init norm reached target `2.0`.
+  - CPU smoke: `wsc_no_scale_factor` keeps `wsc_scale=1.0` even if a stale scale key exists.
+  - CPU smoke: `WSC_USE_OUTPUT_SCALE=False` creates no `wsc_scale` parameter.
+
+## Active Experiment Policy
+
+- Latest scheduling request from the user: pause current `wsc_no_scale` experiments and bring other settings back onto the schedule.
+- Current priority policy:
+  - P1: protect FPS for `no_wsc` and `WSC_grad_scale_constant_all` across both tasks.
+  - P2: `WSC_grad_scale_factor_all`, `WSC_grad_scale_init_all`; resume cautiously when P1 has clear FPS headroom, prioritizing lagging seeds/settings to keep progress reasonably balanced.
+  - Lowest priority: `wsc_no_scale_*` and `WSC_nograd_*`; keep stopped unless explicitly re-enabled or clear FPS headroom exists.
+- Preserve active healthy experiments. Do not interrupt runs unless recovery is needed.
+- Use larger replay cache for resumed/new jobs where possible (`replay.cache_chunks=4096` for the latest no-scale size1m launches).
+- Use `run.save_every=1800` for new/resumed runs to reduce checkpoint I/O pressure.
+- Pause/resume FPS caveat: the first metrics line after `SIGSTOP`/`SIGCONT` can include wall-clock pause time and underreport true throughput. Require a later continuous-running metrics line before deciding FPS is truly below threshold.
+
+## Current Experiment State
+
+- As of 2026-07-23 03:14 HKT, managed Dreamer state is `27` total processes: `17` running and `10` stopped.
+- Current intended running schedule is `9` P1 plus `8` P2. No no-scale or low-priority `WSC_nograd_*` jobs are running.
+- Latest manual action result: P2 dog `WSC_grad_scale_factor_all` seed1000 PID `2566929` on GPU3 produced a second continuous sample at step `830000`/FPS `7.52`, so keep it running. GPU3 P1 walker `WSC_grad_scale_constant_all` seed3000 PID `2543964` and walker `no_wsc` seed3000 PID `2542215` remained safe at FPS `8.33` and `9.13`.
+- Current holding point: `P1=9/P2=8/low=0/no_scale=0`. Dog `WSC_grad_scale_factor_all` now has all three seeds running. Hold this schedule; P1 limiter range is about `8.3-8.6` FPS, so do not resume lagging `WSC_grad_scale_init_all` seeds unless P1 headroom improves.
+- Latest manual action result: P2 dog `WSC_grad_scale_factor_all` seed2000 PID `2572637` on GPU5 produced a second continuous sample at step `1020000`/FPS `9.09`, so keep it running. GPU5 P1 dog `WSC_grad_scale_constant_all` seed3000 PID `2582355` remained safe at step `4370000`/FPS `8.69`.
+- Previous holding point: `P1=9/P2=7/low=0/no_scale=0` stayed stable for another observation window; active P1 limiter range was about `8.7-8.8` FPS before PID `2566929` was resumed.
+- Previous resume result: P2 walker `WSC_grad_scale_factor_all` seed1000 PID `2588459` on GPU1 produced a second continuous sample at step `1220000`/FPS `9.74`, so keep it running. GPU1 P1 dog `WSC_grad_scale_constant_all` seed1000 PID `2581161` remained safe at step `4410000`/FPS `8.61`.
+- Latest manual poll before the GPU5 resume: monitor PID `2913891` was alive, P1/P2 below-counts were all `0`, and current non-contaminated P1/P2 FPS remained above the `5.8` protection floor.
+- Latest action: dog `no_wsc` seed3000 PID `2462714` was given GPU7 by pausing GPU7 P2 jobs, but it produced no new metric for about 36 minutes. Since a 10k step at the 5.8 FPS threshold should complete in about 29 minutes, PID `2462714` was paused again and GPU7 P2 jobs dog `WSC_grad_scale_init_all` seed2000 PID `2573081` plus walker `WSC_grad_scale_init_all` seed1000 PID `2561799` were restored. Their first post-restore metrics were low, then continuous samples recovered to FPS `9.21` and `10.36`.
+- Running P1:
+  - dog `WSC_grad_scale_constant_all`: seed1000 PID `2581161` FPS `10.33`, seed2000 PID `2581645` FPS `9.18`, seed3000 PID `2582355` FPS `10.72`.
+  - walker `WSC_grad_scale_constant_all`: seed1000 PID `2542765` FPS `10.29`, seed2000 PID `2543365` FPS `10.51`, seed3000 PID `2543964` FPS `10.58`.
+  - walker `no_wsc`: seed1000 PID `2540858` FPS `13.17`, seed2000 PID `2541402` FPS `11.97`, seed3000 PID `2542215` FPS `12.03`.
+- dog `no_wsc` is fully stopped. seed1000 PID `2461551`, seed2000 PID `2461997`, and seed3000 PID `2462714` all failed throughput probes; the latest GPU7 seed3000 retry produced no new metrics for about 36 minutes, below the 5.8 FPS progress target.
+- Running P2:
+  - dog `WSC_grad_scale_init_all` seed2000 PID `2573081` on GPU7, step `2290000`/FPS `9.13`.
+  - dog `WSC_grad_scale_factor_all` seed2000 PID `2572637` on GPU5, resumed at 2026-07-23 01:22 HKT from step `1000000`; wait for fresh metrics before judging FPS.
+  - walker `WSC_grad_scale_init_all` seed1000 PID `2561799` on GPU7, step `2900000`/FPS `10.00`.
+  - walker `WSC_grad_scale_factor_all` seed3000 PID `2561803` on GPU6, step `2510000`/FPS `10.17`.
+  - dog `WSC_grad_scale_factor_all` seed3000 PID `2589952` on GPU6, step `1950000`/FPS `8.50`.
+  - walker `WSC_grad_scale_factor_all` seed1000 PID `2588459` on GPU1, resumed at 2026-07-23 00:54 HKT from step `1200000`; wait for fresh metrics before judging FPS.
+  - walker `WSC_grad_scale_factor_all` seed2000 PID `2551163` on GPU4, step `3390000`/FPS `9.83`. It shares GPU4 with P1 dog `WSC_grad_scale_constant_all` seed2000 PID `2581645`; GPU4 P1 remains safe but limiting, so do not add more P2 there while this remains the minimum.
+- Stopped P2 with recent caveats:
+  - GPU6 P2 jobs remain stopped while dog `no_wsc` has demonstrated poor throughput there; avoid GPU6 unless there is clear headroom and no P1 probe is active.
+- Stopped no-scale deployment under `logdir/continual_dreamer_soft_reset_size1m/wsc_wsc_no_scale_constant_all/`: seed1000 PID `2672938`, seed2000 PID `2677387`, seed3000 PID `2681197`.
+- Continue with P1 protection first. P2 shares GPU4, GPU1, GPU3, and GPU5 with P1; current P1 limiter range is about `8.3-8.7` FPS while staying safe. Hold at `8` P2 for another observation window before any further resume. Do not retry dog `no_wsc` without a materially different resource plan. Do not resume no-scale or `WSC_nograd_*` unless explicitly re-enabled or there is clear FPS headroom.
+
+## Background Monitor
+
+- Monitor script: `/tmp/codex_wsc_monitor.py`.
+- PID file: `/tmp/codex_wsc_monitor.pid`.
+- As of 2026-07-23 03:14 HKT, monitor PID `2913891` is alive. It replaced old PID `2854162` so the running process uses the fixed log-compaction timestamp sorting.
+- It checks every 10 minutes, writes compact heartbeats every 30 minutes to `codex-cli-executor.log`, pauses any low-priority running job (`wsc_no_scale`, `WSC_nograd_*`), logs warnings only after two consecutive fresh P1 steps below `5.8`, pauses running P2 jobs to protect P1 after such warnings, pauses P2 jobs after two consecutive fresh below-threshold P2 metrics, and periodically compacts repetitive heartbeat records while preserving interventions and recent heartbeats. As of 2026-07-20 06:45 HKT, compaction sorts retained log records by timestamp prefix so the log stays chronological.
+- Fresh-metrics rule: monitor tracks per-PID `running_since` after `SIGCONT`/status transition and ignores metrics written before the current running window when counting below-threshold samples.
+- If the monitor dies, inspect `/tmp/codex_wsc_monitor.out`, restart with `setsid python /tmp/codex_wsc_monitor.py >/tmp/codex_wsc_monitor.out 2>&1 < /dev/null & echo $! > /tmp/codex_wsc_monitor.pid`, then update this file and `codex-cli-executor.log`.
+
+## Logging Policy
+
+- Keep `task_checklist.md` as the concise task contract.
+- Keep `codex-cli-executor.log` concise: retain a summary plus recent meaningful experiment records; remove repetitive low-value polling detail when it grows.
+- Move only durable operational context into this file.
+- Do not expose or commit W&B secrets.
