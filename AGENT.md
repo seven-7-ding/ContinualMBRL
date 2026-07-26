@@ -2,79 +2,68 @@
 
 ## Current Objective
 
-- `wsc_no_scale_{init,constant,factor}` is implemented and validated.
-- Continue monitoring/managing active continual Dreamer experiments.
-- Keep `task_checklist.md` compact. Since `codex-cli-executor.log` exists, experiment polling/progress belongs there, while only durable operational context belongs here.
+- Manage the 2026-07-23 experiment schedule for `/home/jiale/MBRL/ContinualMBRL-wsc`.
+- Active policy: keep only existing `no_wsc` and `wsc_WSC_grad_scale_constant_all` walker/dog runs from the old schedule; kill old lower-priority `init`, `factor`, `nograd`, and `wsc_no_scale` runs and old queueing shells.
+- New experiments are managed by `auto_scripts/codex_experiment_scheduler.py` with state under `logdir/scheduler/`.
+- Latest user instruction: keep the scheduler in the foreground of the active Codex session; do not rely only on a background daemon, do not voluntarily stop polling, and maximize concurrency under FPS/GPU/RAM safety constraints.
+- Keep `task_checklist.md` compact. Since `codex-cli-executor.log` exists, experiment polling/progress belongs there, while durable operational context belongs here.
 
-## WSC No-Scale Semantics
+## W&B And Logging
 
-- `wsc_no_scale_*` mechanisms must not create or train per-layer `wsc_scale`.
-- Effective output scale is implicit `1.0`.
-- After optimizer updates, no-scale WSC only rescales selected layer `kernel`/`bias` parameters according to the selected Frobenius mode.
-- For WSC modes with a target Frobenius scale (`init` and `constant`), selected layers are normalized at parameter creation before the first optimizer update.
+- W&B project/group/name are inferred by `dreamerv3/main.py` from the last three `logdir` path components: `logdir/<project>/<group>/<run>`.
+- W&B credentials belong only in `.env.wandb.local`, which is ignored by git via `.env*.local`.
+- Do not print, copy, or commit the W&B API key.
+- Periodically compact `codex-cli-executor.log`: retain one concise summary plus recent meaningful scheduler records, remove repetitive heartbeat detail, and avoid duplicating progress in `task_checklist.md`.
+- W&B health is part of log legality: the active run must have fresh files under `logdir/.../wandb/wandb/run-*`, a fresh `logs/debug-internal.log`, and no unrecovered filestream fatal after the last `200 OK` upload.
+- Remote W&B run state can drift to `crashed` even while active local filestream uploads keep returning `200 OK`. The scheduler runs a remote state check every foreground poll interval currently configured as `CODEX_SCHED_REMOTE_WANDB_CHECK_SECONDS=120`; when local health is clean and a remote active run is `crashed` or `failed`, it repairs the remote state to `pending`. W&B does not allow direct API transition to `running`; continued curve upload is verified via fresh local W&B logs and remote summary/filestream behavior.
 
-## Validation Evidence
+## Existing Runs To Preserve
 
-- Focused validation passed on 2026-07-18:
-  - `python -m compileall embodied/jax/wsc.py embodied/jax/nets.py embodied/jax/opt.py dreamerv3/agent.py`
-  - CPU smoke: `wsc_no_scale_{init,constant,factor}` parse correctly.
-  - CPU smoke: `wsc_no_scale_constant` init norm reached target `2.0`.
-  - CPU smoke: `wsc_no_scale_factor` keeps `wsc_scale=1.0` even if a stale scale key exists.
-  - CPU smoke: `WSC_USE_OUTPUT_SCALE=False` creates no `wsc_scale` parameter.
+- Existing target experiments should be the 12 combinations:
+  - Tasks: `walker_run|hopper_hop|fish_swim` and `dog_stand|dog_walk|dog_trot`.
+  - Mechanisms/groups: `no_wsc` and `wsc_WSC_grad_scale_constant_all`.
+  - Seeds: `1000`, `2000`, `3000`.
+- If any of these are stopped, the scheduler may resume them, but it must still enforce the `5.8` FPS floor and OOM protection.
 
-## Active Experiment Policy
+## New Queue
 
-- Latest scheduling request from the user: pause current `wsc_no_scale` experiments and bring other settings back onto the schedule.
-- Current priority policy:
-  - P1: protect FPS for `no_wsc` and `WSC_grad_scale_constant_all` across both tasks.
-  - P2: `WSC_grad_scale_factor_all`, `WSC_grad_scale_init_all`; resume cautiously when P1 has clear FPS headroom, prioritizing lagging seeds/settings to keep progress reasonably balanced.
-  - Lowest priority: `wsc_no_scale_*` and `WSC_nograd_*`; keep stopped unless explicitly re-enabled or clear FPS headroom exists.
-- Preserve active healthy experiments. Do not interrupt runs unless recovery is needed.
-- Use larger replay cache for resumed/new jobs where possible (`replay.cache_chunks=4096` for the latest no-scale size1m launches).
-- Use `run.save_every=1800` for new/resumed runs to reduce checkpoint I/O pressure.
-- Pause/resume FPS caveat: the first metrics line after `SIGSTOP`/`SIGCONT` can include wall-clock pause time and underreport true throughput. Require a later continuous-running metrics line before deciding FPS is truly below threshold.
+- Priority 1: DMC-prior continual task string `swimmer_swimmer6|cheetah_run|reacher_hard`.
+  - This is the repo-compatible interpretation of the user wording `swimmer|halfcheetah|reacher_hard`.
+  - Use `--run.task_interval 500000` and `--run.steps 7500000` for 5 cycles over 3 tasks.
+  - Use `no_wsc` and `WSC_grad_scale_constant_all`, seeds `1000/2000/3000`.
+  - Use a separate W&B project from the existing walker/hopper/fish project.
+- Priority 2: Crafter single-task runs.
+  - Use default `crafter` config except WSC/no-WSC setting, seed, logdir, and EGL/CUDA placement.
+  - Use `no_wsc` and `WSC_grad_scale_constant_all`, seeds `1000/2000/3000`.
+  - Latest user update: Crafter runs must use `--run.task_interval 100000000` and `--run.steps 100000000`; runs previously stopped at about `1100000` steps were stopped by an incorrect scheduler completion threshold and must resume from the existing logdir/checkpoint and W&B run id.
+- Priority 3: Quadruped hard-task comparison.
+  - Task: `quadruped_walk|quadruped_escape|quadruped_fetch`.
+  - Use `WSC_grad_scale_constant_all`, seeds `1000/2000/3000`.
+  - Hyperparameters follow `/home/jiale/MBRL/ContinualMBRL-soft-reset/auto_scripts/hard_task_quadruped.sh`: `size1m`, `train_ratio=1024`, `task_interval=1000000`, `reset_frequency=50000`, `reset_alpha=0.8`, `revive_epoch=0`, `revive_strategy=threshold`, `imag_length=15`, ReDo logging enabled.
+  - Latest user correction: W&B project remains `continual_dreamer_soft_reset_quadruped_walk|quadruped_escape|quadruped_fetch_size1m`, but group must be `wsc_WSC_grad_scale_constant_all`, not a `sandp_*` group; run names remain `seed_<seed>`.
+  - This WSC repo rejects `--run.reset_alpha`; keep the comparable W&B group name but do not pass that unsupported CLI flag.
+- Priority 4: Humanoid continual task.
+  - Task: `humanoid_stand|humanoid_run`.
+  - Use `WSC_grad_scale_constant_all`, seeds `1000/2000/3000`.
+  - Hyperparameters follow the humanoid entry in `auto_scripts/wsc_continual_scheduler.sh`: `size1m`, `train_ratio=1024`, `task_interval=3000000`, `reset_frequency=0`, `revive_epoch=0`, replay chunksize/cache from that script, WSC target `all`.
+  - W&B project `continual_dreamer_soft_reset_humanoid_stand|humanoid_run_size1m`, group `wsc_WSC_grad_scale_constant_all`, run `seed_<seed>`.
 
-## Current Experiment State
+## Safety Policy
 
-- As of 2026-07-23 03:14 HKT, managed Dreamer state is `27` total processes: `17` running and `10` stopped.
-- Current intended running schedule is `9` P1 plus `8` P2. No no-scale or low-priority `WSC_nograd_*` jobs are running.
-- Latest manual action result: P2 dog `WSC_grad_scale_factor_all` seed1000 PID `2566929` on GPU3 produced a second continuous sample at step `830000`/FPS `7.52`, so keep it running. GPU3 P1 walker `WSC_grad_scale_constant_all` seed3000 PID `2543964` and walker `no_wsc` seed3000 PID `2542215` remained safe at FPS `8.33` and `9.13`.
-- Current holding point: `P1=9/P2=8/low=0/no_scale=0`. Dog `WSC_grad_scale_factor_all` now has all three seeds running. Hold this schedule; P1 limiter range is about `8.3-8.6` FPS, so do not resume lagging `WSC_grad_scale_init_all` seeds unless P1 headroom improves.
-- Latest manual action result: P2 dog `WSC_grad_scale_factor_all` seed2000 PID `2572637` on GPU5 produced a second continuous sample at step `1020000`/FPS `9.09`, so keep it running. GPU5 P1 dog `WSC_grad_scale_constant_all` seed3000 PID `2582355` remained safe at step `4370000`/FPS `8.69`.
-- Previous holding point: `P1=9/P2=7/low=0/no_scale=0` stayed stable for another observation window; active P1 limiter range was about `8.7-8.8` FPS before PID `2566929` was resumed.
-- Previous resume result: P2 walker `WSC_grad_scale_factor_all` seed1000 PID `2588459` on GPU1 produced a second continuous sample at step `1220000`/FPS `9.74`, so keep it running. GPU1 P1 dog `WSC_grad_scale_constant_all` seed1000 PID `2581161` remained safe at step `4410000`/FPS `8.61`.
-- Latest manual poll before the GPU5 resume: monitor PID `2913891` was alive, P1/P2 below-counts were all `0`, and current non-contaminated P1/P2 FPS remained above the `5.8` protection floor.
-- Latest action: dog `no_wsc` seed3000 PID `2462714` was given GPU7 by pausing GPU7 P2 jobs, but it produced no new metric for about 36 minutes. Since a 10k step at the 5.8 FPS threshold should complete in about 29 minutes, PID `2462714` was paused again and GPU7 P2 jobs dog `WSC_grad_scale_init_all` seed2000 PID `2573081` plus walker `WSC_grad_scale_init_all` seed1000 PID `2561799` were restored. Their first post-restore metrics were low, then continuous samples recovered to FPS `9.21` and `10.36`.
-- Running P1:
-  - dog `WSC_grad_scale_constant_all`: seed1000 PID `2581161` FPS `10.33`, seed2000 PID `2581645` FPS `9.18`, seed3000 PID `2582355` FPS `10.72`.
-  - walker `WSC_grad_scale_constant_all`: seed1000 PID `2542765` FPS `10.29`, seed2000 PID `2543365` FPS `10.51`, seed3000 PID `2543964` FPS `10.58`.
-  - walker `no_wsc`: seed1000 PID `2540858` FPS `13.17`, seed2000 PID `2541402` FPS `11.97`, seed3000 PID `2542215` FPS `12.03`.
-- dog `no_wsc` is fully stopped. seed1000 PID `2461551`, seed2000 PID `2461997`, and seed3000 PID `2462714` all failed throughput probes; the latest GPU7 seed3000 retry produced no new metrics for about 36 minutes, below the 5.8 FPS progress target.
-- Running P2:
-  - dog `WSC_grad_scale_init_all` seed2000 PID `2573081` on GPU7, step `2290000`/FPS `9.13`.
-  - dog `WSC_grad_scale_factor_all` seed2000 PID `2572637` on GPU5, resumed at 2026-07-23 01:22 HKT from step `1000000`; wait for fresh metrics before judging FPS.
-  - walker `WSC_grad_scale_init_all` seed1000 PID `2561799` on GPU7, step `2900000`/FPS `10.00`.
-  - walker `WSC_grad_scale_factor_all` seed3000 PID `2561803` on GPU6, step `2510000`/FPS `10.17`.
-  - dog `WSC_grad_scale_factor_all` seed3000 PID `2589952` on GPU6, step `1950000`/FPS `8.50`.
-  - walker `WSC_grad_scale_factor_all` seed1000 PID `2588459` on GPU1, resumed at 2026-07-23 00:54 HKT from step `1200000`; wait for fresh metrics before judging FPS.
-  - walker `WSC_grad_scale_factor_all` seed2000 PID `2551163` on GPU4, step `3390000`/FPS `9.83`. It shares GPU4 with P1 dog `WSC_grad_scale_constant_all` seed2000 PID `2581645`; GPU4 P1 remains safe but limiting, so do not add more P2 there while this remains the minimum.
-- Stopped P2 with recent caveats:
-  - GPU6 P2 jobs remain stopped while dog `no_wsc` has demonstrated poor throughput there; avoid GPU6 unless there is clear headroom and no P1 probe is active.
-- Stopped no-scale deployment under `logdir/continual_dreamer_soft_reset_size1m/wsc_wsc_no_scale_constant_all/`: seed1000 PID `2672938`, seed2000 PID `2677387`, seed3000 PID `2681197`.
-- Continue with P1 protection first. P2 shares GPU4, GPU1, GPU3, and GPU5 with P1; current P1 limiter range is about `8.3-8.7` FPS while staying safe. Hold at `8` P2 for another observation window before any further resume. Do not retry dog `no_wsc` without a materially different resource plan. Do not resume no-scale or `WSC_nograd_*` unless explicitly re-enabled or there is clear FPS headroom.
+- FPS floor: policy FPS should be at least `5.8` for every non-Crafter running experiment after a fresh continuous metrics sample exists. Crafter uses a relaxed scheduler floor, currently `0.5`, plus `21600` seconds freshness grace because Crafter logs every 10k steps and can be much slower.
+- Launch only when all current fresh running samples are above the floor, system RAM is safe, and the selected GPU has enough free memory.
+- Current high-concurrency foreground run uses up to `32` total runs, `4` runs per GPU, and `3500` MB minimum free GPU memory; GPU selection prioritizes the fewest active training processes, then lower memory-use ratio and lower utilization to keep CUDA load balanced. Health protection can roll back managed jobs or pause unmanaged low-FPS runs if throughput falls below threshold.
+- If a process exits successfully, mark `scheduler_done` and launch the next queued job when safe.
+- If a process fails or repeatedly falls below FPS after the grace window, stop it, log the reason, and continue managing remaining work without exposing secrets.
 
-## Background Monitor
+## Latest Snapshot
 
-- Monitor script: `/tmp/codex_wsc_monitor.py`.
-- PID file: `/tmp/codex_wsc_monitor.pid`.
-- As of 2026-07-23 03:14 HKT, monitor PID `2913891` is alive. It replaced old PID `2854162` so the running process uses the fixed log-compaction timestamp sorting.
-- It checks every 10 minutes, writes compact heartbeats every 30 minutes to `codex-cli-executor.log`, pauses any low-priority running job (`wsc_no_scale`, `WSC_nograd_*`), logs warnings only after two consecutive fresh P1 steps below `5.8`, pauses running P2 jobs to protect P1 after such warnings, pauses P2 jobs after two consecutive fresh below-threshold P2 metrics, and periodically compacts repetitive heartbeat records while preserving interventions and recent heartbeats. As of 2026-07-20 06:45 HKT, compaction sorts retained log records by timestamp prefix so the log stays chronological.
-- Fresh-metrics rule: monitor tracks per-PID `running_since` after `SIGCONT`/status transition and ignores metrics written before the current running window when counting below-threshold samples.
-- If the monitor dies, inspect `/tmp/codex_wsc_monitor.out`, restart with `setsid python /tmp/codex_wsc_monitor.py >/tmp/codex_wsc_monitor.out 2>&1 < /dev/null & echo $! > /tmp/codex_wsc_monitor.pid`, then update this file and `codex-cli-executor.log`.
-
-## Logging Policy
-
-- Keep `task_checklist.md` as the concise task contract.
-- Keep `codex-cli-executor.log` concise: retain a summary plus recent meaningful experiment records; remove repetitive low-value polling detail when it grows.
-- Move only durable operational context into this file.
-- Do not expose or commit W&B secrets.
+- 2026-07-25 HKT: wrong W&B remote runs are absent (`wrong_remote_present_count=0`), and local wrong archives/sandp quadruped dirs are absent (`local_wrong_dirs=0/0`).
+- Scheduler treats any logdir containing `crafter` as a Crafter run, so the current foreground scheduler uses the relaxed `0.5` FPS threshold and `21600` second freshness grace for Crafter.
+- Scheduler blocks new launches on the first fresh low-FPS sample, but stops/requeues only after two consecutive low-FPS samples; manual foreground management may pause a low fresh-FPS process immediately to satisfy the user's strict running-FPS rule.
+- Quadruped seeds `1000`, `2000`, and `3000` were relaunched with corrected logdir-derived W&B naming, but each produced fresh FPS below `5.8` and was paused. Three later-discovered wrong remote runs in group `sandp_all_a0p8_50k_no_revive` were deleted on 2026-07-25. A later single-run seed `3000` probe with only six DMC-prior runs active produced no fresh metrics after about 2 minutes and was paused again.
+- Crafter no_wsc and WSC seeds `1000/2000/3000` are resumed toward `100000000` total steps with `--run.task_interval 100000000`, original logdirs, and original W&B run ids.
+- 2026-07-26 11:01 HKT snapshot: 12 active runs are healthy: six DMC-prior and six Crafter. GPU distribution is balanced as `0:1, 1:2, 2:1, 3:2, 4:2, 5:1, 6:2, 7:1`; JSONL metrics are parseable and monotonic, train logs are fresh, W&B local files/internal logs are fresh, and remote project/group/run names match. Remote W&B state continues to drift on some active runs, so the foreground scheduler now auto-repairs `crashed/failed -> pending` every 120 seconds after local health passes.
+- DMC-prior seed `2000` no_wsc and WSC had unrecovered W&B filestream fatal logs on 2026-07-25 while local training continued. They were externally synced, then restarted from checkpoint with `WANDB_RUN_ID=o4f60wjm` and `WANDB_RUN_ID=c9z2r69x`, `WANDB_RESUME=must`; on 2026-07-26 they were repaired again after remote state drift, relaunched with original run ids, and remote W&B state is running. Local nonmonotonic metrics rows from checkpoint catch-up were removed from no_wsc seed `2000` with backups.
+- 2026-07-26 19:50 HKT: 18 long-paused `T` state Dreamer processes from old walker/dog, humanoid, and quadruped probes were terminated because they were not in the active scheduler jobs, were not writing logs, and were holding about 150GiB RSS plus GPU allocations. This released GPU memory and reduced swap from about 6.3GiB to about 581MiB while preserving the current 12 active DMC/Crafter runs.
+- 2026-07-26 20:38 HKT: scheduler retried quadruped seeds `1000/2000` and humanoid seeds `1000/2000/3000`. Quadruped seeds `1000/2000` produced fresh FPS below `5.8` and were stopped/marked failed; quadruped seed `3000` was already failed after max attempts. Humanoid seeds `1000/2000/3000` are active and healthy with fresh FPS above `5.8`.
