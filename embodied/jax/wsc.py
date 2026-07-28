@@ -78,7 +78,7 @@ def layer_param_count(params, path):
   return total
 
 
-def layer_groups(params, target):
+def layer_groups(params, target, require_following_rmsnorm=False):
   groups = {}
   for key in params:
     path = layer_path(key)
@@ -86,13 +86,15 @@ def layer_groups(params, target):
       continue
     if not reset_targets.matches_target(path, target):
       continue
+    if require_following_rmsnorm and not has_following_rmsnorm(path, params):
+      continue
     groups.setdefault(path, []).append(key)
   return groups
 
 
-def initial_layer_norms(params, target, eps=1e-8):
+def initial_layer_norms(params, target, eps=1e-8, require_following_rmsnorm=False):
   norms = {}
-  for path in layer_groups(params, target):
+  for path in layer_groups(params, target, require_following_rmsnorm):
     norm = layer_norm(params, path)
     norms[path] = jnp.where(
         norm <= jnp.asarray(eps, f32), jnp.asarray(1.0, f32), norm)
@@ -120,7 +122,7 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
     return False, 'nograd', default_norm_mode
   if not lower.startswith('wsc'):
     raise ValueError(f'Unknown WSC mechanism: {mechanism}')
-  if 'no_scale' in lower or 'noscale' in lower:
+  if is_skip_last_layer_mechanism(lower) or 'no_scale' in lower or 'noscale' in lower:
     scale_mode = 'no_scale'
   else:
     scale_mode = 'grad' if 'grad_scale' in lower and 'nograd' not in lower else 'nograd'
@@ -134,6 +136,10 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
   elif 'init' in lower:
     norm_mode = 'init'
   return True, scale_mode, norm_mode
+
+
+def is_skip_last_layer_mechanism(mechanism):
+  return 'skip_last_layer' in str(mechanism or '').lower()
 
 
 class WSC(nj.Module):
@@ -160,6 +166,7 @@ class WSC(nj.Module):
     self._scale_mode = scale_mode
     self._norm_mode = norm_mode
     self._target = reset_targets.canonical_target(self.target)
+    self._skip_last_layer = is_skip_last_layer_mechanism(self.mechanism)
 
   @property
   def active(self):
@@ -178,12 +185,24 @@ class WSC(nj.Module):
     return self._target
 
   @property
+  def skip_last_layer(self):
+    return self._skip_last_layer
+
+  @property
   def nograd_scale(self):
     return self.active and self.parsed_scale_mode == 'nograd'
 
   @property
   def uses_output_scale(self):
     return self.active and self.parsed_scale_mode in ('grad', 'nograd')
+
+  def _all_layer_groups(self, params):
+    return layer_groups(params, self.parsed_target)
+
+  def _controlled_layer_groups(self, params):
+    return layer_groups(
+        params, self.parsed_target,
+        require_following_rmsnorm=self.skip_last_layer)
 
   def zero_scale_grads(self, grads):
     if not self.active or self.parsed_scale_mode not in ('nograd', 'no_scale'):
@@ -198,15 +217,17 @@ class WSC(nj.Module):
       return params, {}
     if self.parsed_norm_mode not in ('constant', 'init'):
       return params, {}
-    groups = layer_groups(params, self.parsed_target)
-    if not groups:
+    all_groups = self._all_layer_groups(params)
+    if not all_groups:
       return params, {}
+    groups = self._controlled_layer_groups(params)
     new_params = dict(params)
     metrics = {}
     if self.parsed_norm_mode == 'init':
       target_tree = self.sub(
           'target_norms', nj.Tree,
-          lambda params: initial_layer_norms(params, self.parsed_target, self.eps),
+          lambda params: initial_layer_norms(
+              params, self.parsed_target, self.eps, self.skip_last_layer),
           params)
       target_norms = sanitize_init_target_norms(target_tree.read(), self.eps)
       target_tree.write(target_norms)
@@ -229,15 +250,27 @@ class WSC(nj.Module):
       metrics[f'wsc/init_factor/{lname}'] = f32(factor)
       metrics[f'wsc/init_pre_norm/{lname}'] = f32(norm)
       metrics[f'wsc/init_target_norm/{lname}'] = f32(target)
+      if self.skip_last_layer:
+        metrics[f'wsc/init_controlled/{lname}'] = jnp.asarray(1.0, f32)
+    if self.skip_last_layer:
+      for path in all_groups:
+        if path in groups:
+          continue
+        lname = metric_name(path)
+        metrics[f'wsc/init_factor/{lname}'] = jnp.asarray(1.0, f32)
+        metrics[f'wsc/init_pre_norm/{lname}'] = f32(layer_norm(new_params, path))
+        metrics[f'wsc/init_target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
+        metrics[f'wsc/init_controlled/{lname}'] = jnp.asarray(0.0, f32)
     return new_params, metrics
 
   def step(self, pre_params, post_params, outputs=None, step=None, lr=None):
     if not self.active:
       return post_params, {}
     outputs = outputs or {}
-    groups = layer_groups(post_params, self.parsed_target)
-    if not groups:
+    all_groups = self._all_layer_groups(post_params)
+    if not all_groups:
       return post_params, {}
+    groups = self._controlled_layer_groups(post_params)
     wsc_started = jnp.asarray(True)
     if self.nograd_scale and step is not None:
       wsc_started = jnp.asarray(step >= self.nograd_start_step)
@@ -247,7 +280,7 @@ class WSC(nj.Module):
       target_tree = self.sub(
           'target_norms', nj.Tree,
           lambda params: initial_layer_norms(
-              params, self.parsed_target, self.eps),
+              params, self.parsed_target, self.eps, self.skip_last_layer),
           pre_params)
       target_norms = sanitize_init_target_norms(target_tree.read(), self.eps)
       target_tree.write(target_norms)
@@ -323,10 +356,22 @@ class WSC(nj.Module):
       metrics[f'wsc/factor/{lname}'] = f32(factor)
       metrics[f'wsc/pre_norm/{lname}'] = f32(norm)
       metrics[f'wsc/target_norm/{lname}'] = f32(target)
+      if self.skip_last_layer:
+        metrics[f'wsc/controlled/{lname}'] = jnp.asarray(1.0, f32)
       if self.parsed_norm_mode in ('factor', 'lr'):
         metrics[f'wsc/lr/{lname}'] = f32(lr_value)
       if self.parsed_norm_mode == 'lr':
         metrics[f'wsc/lr_param_count/{lname}'] = f32(count)
+
+    if self.skip_last_layer:
+      for path in all_groups:
+        if path in groups:
+          continue
+        lname = metric_name(path)
+        metrics[f'wsc/factor/{lname}'] = jnp.asarray(1.0, f32)
+        metrics[f'wsc/pre_norm/{lname}'] = f32(layer_norm(params, path))
+        metrics[f'wsc/target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
+        metrics[f'wsc/controlled/{lname}'] = jnp.asarray(0.0, f32)
 
     if self.nograd_scale:
       metrics['wsc/nograd_started'] = f32(wsc_started)

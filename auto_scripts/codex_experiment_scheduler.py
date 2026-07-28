@@ -17,9 +17,9 @@ LOG = ROOT / "codex-cli-executor.log"
 AGENT = ROOT / "AGENT.md"
 CHECKLIST = ROOT / "task_checklist.md"
 SCHED_DIR = ROOT / "logdir" / "scheduler"
-STATE_PATH = SCHED_DIR / "codex_experiment_scheduler_state.json"
-PID_PATH = SCHED_DIR / "codex_experiment_scheduler.pid"
-OUT_PATH = SCHED_DIR / "codex_experiment_scheduler.out"
+STATE_PATH = SCHED_DIR / "codex_wsc_skip_last_layer_state.json"
+PID_PATH = SCHED_DIR / "codex_wsc_skip_last_layer.pid"
+OUT_PATH = SCHED_DIR / "codex_wsc_skip_last_layer.out"
 
 THRESH_FPS = float(os.environ.get("CODEX_SCHED_MIN_FPS", "5.8"))
 CRAFTER_THRESH_FPS = float(os.environ.get("CODEX_SCHED_CRAFTER_MIN_FPS", "2.0"))
@@ -34,19 +34,35 @@ FRESH_GRACE_SECONDS = int(os.environ.get("CODEX_SCHED_FRESH_GRACE_SECONDS", "270
 CRAFTER_FRESH_GRACE_SECONDS = int(
     os.environ.get("CODEX_SCHED_CRAFTER_FRESH_GRACE_SECONDS", str(FRESH_GRACE_SECONDS))
 )
+OLD_DOG_NO_WSC_FRESH_GRACE_SECONDS = int(
+    os.environ.get("CODEX_SCHED_OLD_DOG_NO_WSC_FRESH_GRACE_SECONDS", "5400")
+)
+LOW_FPS_CONFIRM_COUNT = int(os.environ.get("CODEX_SCHED_LOW_FPS_CONFIRM_COUNT", "2"))
+HUMANOID_LOW_FPS_CONFIRM_COUNT = int(
+    os.environ.get("CODEX_SCHED_HUMANOID_LOW_FPS_CONFIRM_COUNT", "4")
+)
+LOW_FPS_REPEAT_SECONDS = int(os.environ.get("CODEX_SCHED_LOW_FPS_REPEAT_SECONDS", "600"))
+HUMANOID_LOW_FPS_REPEAT_SECONDS = int(
+    os.environ.get("CODEX_SCHED_HUMANOID_LOW_FPS_REPEAT_SECONDS", "1200")
+)
 MAX_ATTEMPTS = int(os.environ.get("CODEX_SCHED_MAX_ATTEMPTS", "2"))
 LOG_COMPACT_SECONDS = int(os.environ.get("CODEX_SCHED_LOG_COMPACT_SECONDS", str(6 * 60 * 60)))
 REMOTE_WANDB_CHECK_SECONDS = int(os.environ.get("CODEX_SCHED_REMOTE_WANDB_CHECK_SECONDS", "600"))
 REMOTE_WANDB_TIMEOUT = int(os.environ.get("CODEX_SCHED_REMOTE_WANDB_TIMEOUT", "45"))
+EXCLUDE_GPUS = {
+    int(item)
+    for item in os.environ.get("CODEX_SCHED_EXCLUDE_GPUS", "").replace(",", " ").split()
+    if item.strip().isdigit()
+}
 
 SEEDS = ("1000", "2000", "3000")
 KEEP_OLD_TASKS = {
     "walker_run|hopper_hop|fish_swim",
+    "swimmer_swimmer6|cheetah_run|reacher_hard",
     "dog_stand|dog_walk|dog_trot",
 }
 KEEP_OLD_GROUP_MARKERS = (
     "/no_wsc/",
-    "/wsc_WSC_grad_scale_constant_all/",
 )
 ERROR_RE = (
     "Traceback",
@@ -91,6 +107,28 @@ def log(message: str) -> None:
 
 def is_crafter_logdir(logdir: str) -> bool:
     return "crafter" in logdir.lower()
+
+
+def no_fresh_metrics_grace(logdir: str) -> int:
+    if is_crafter_logdir(logdir):
+        return CRAFTER_FRESH_GRACE_SECONDS
+    if (
+        "continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m/no_wsc/" in logdir
+    ):
+        return max(FRESH_GRACE_SECONDS, OLD_DOG_NO_WSC_FRESH_GRACE_SECONDS)
+    return FRESH_GRACE_SECONDS
+
+
+def low_fps_confirm_count(logdir: str) -> int:
+    if "humanoid_stand|humanoid_run" in logdir:
+        return max(LOW_FPS_CONFIRM_COUNT, HUMANOID_LOW_FPS_CONFIRM_COUNT)
+    return LOW_FPS_CONFIRM_COUNT
+
+
+def low_fps_repeat_seconds(logdir: str) -> int:
+    if "humanoid_stand|humanoid_run" in logdir:
+        return max(LOW_FPS_REPEAT_SECONDS, HUMANOID_LOW_FPS_REPEAT_SECONDS)
+    return LOW_FPS_REPEAT_SECONDS
 
 
 def load_state() -> dict:
@@ -145,6 +183,10 @@ def task_dims(task_string: str) -> tuple[int, int]:
 def mechanism_group(mechanism: str) -> tuple[str, str, str]:
     if mechanism == "no_wsc":
         return "no_wsc", "disabled", "all"
+    if mechanism.startswith("wsc_skip_last_layer_"):
+        if mechanism.endswith("_all"):
+            return mechanism, mechanism, "all"
+        return f"{mechanism}_all", mechanism, "all"
     return f"wsc_{mechanism}_all", mechanism, "all"
 
 
@@ -219,133 +261,66 @@ def crafter_args(mechanism: str) -> tuple[str, ...]:
 def build_jobs() -> list[Job]:
     jobs: list[Job] = []
 
-    dmc_task = "swimmer_swimmer6|cheetah_run|reacher_hard"
-    dmc_project = "continual_dreamer_soft_reset_dmcprior_swimmer_cheetah_reacher_size1m"
-    for mechanism in ("no_wsc", "WSC_grad_scale_constant"):
-        group, _, _ = mechanism_group(mechanism)
-        for seed in SEEDS:
-            jobs.append(Job(
-                key=f"p1_dmc_{mechanism}_{seed}",
-                priority=1,
-                label=f"dmc-prior {mechanism} seed {seed}",
-                task=dmc_task,
-                project=dmc_project,
-                group=group,
-                run=f"seed_{seed}",
-                configs=("continual_dmc_priori", "size1m"),
-                steps=7_500_000,
-                args=continual_args(
-                    task=dmc_task,
-                    interval=500_000,
-                    mechanism=mechanism,
-                    steps=7_500_000,
-                    replay_cache_chunks=4096,
-                ),
-            ))
+    mechanism = "wsc_skip_last_layer_constant_all"
+
+    dog_task = "dog_stand|dog_walk|dog_trot"
+    dog_project = "continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m"
+    group, _, _ = mechanism_group(mechanism)
+    for seed in SEEDS:
+        jobs.append(Job(
+            key=f"p1_dog_skip_last_layer_constant_{seed}",
+            priority=1,
+            label=f"dog {mechanism} seed {seed}",
+            task=dog_task,
+            project=dog_project,
+            group=group,
+            run=f"seed_{seed}",
+            configs=("continual_dmc_priori", "size1m"),
+            steps=6_000_000,
+            args=continual_args(
+                task=dog_task,
+                interval=2_000_000,
+                mechanism=mechanism,
+                steps=6_000_000,
+                replay_cache_chunks=4096,
+            ),
+        ))
 
     crafter_project = "continual_dreamer_soft_reset_crafter_size1m"
-    for mechanism in ("no_wsc", "WSC_grad_scale_constant"):
-        group, _, _ = mechanism_group(mechanism)
-        for seed in SEEDS:
-            jobs.append(Job(
-                key=f"p2_crafter_{mechanism}_{seed}",
-                priority=2,
-                label=f"crafter {mechanism} seed {seed}",
-                task="crafter_reward",
-                project=crafter_project,
-                group=group,
-                run=f"seed_{seed}",
-                configs=("crafter", "size1m"),
-                steps=100_000_000,
-                args=crafter_args(mechanism),
-            ))
-
-    quad_task = "quadruped_walk|quadruped_escape|quadruped_fetch"
-    quad_project = "continual_dreamer_soft_reset_quadruped_walk|quadruped_escape|quadruped_fetch_size1m"
-    quad_group = "wsc_WSC_grad_scale_constant_all"
     for seed in SEEDS:
         jobs.append(Job(
-            key=f"p3_quadruped_wsc_constant_{seed}",
+            key=f"p2_crafter_skip_last_layer_constant_{seed}",
+            priority=2,
+            label=f"crafter {mechanism} seed {seed}",
+            task="crafter_reward",
+            project=crafter_project,
+            group=group,
+            run=f"seed_{seed}",
+            configs=("crafter", "size1m"),
+            steps=100_000_000,
+            args=crafter_args(mechanism),
+        ))
+
+    mujoco_task = "walker_run|hopper_hop|fish_swim"
+    mujoco_project = "continual_dreamer_soft_reset_size1m"
+    for seed in SEEDS:
+        jobs.append(Job(
+            key=f"p3_mujoco_skip_last_layer_constant_{seed}",
             priority=3,
-            label=f"quadruped WSC_grad_scale_constant seed {seed}",
-            task=quad_task,
-            project=quad_project,
-            group=quad_group,
+            label=f"mujoco chain {mechanism} seed {seed}",
+            task=mujoco_task,
+            project=mujoco_project,
+            group=group,
             run=f"seed_{seed}",
             configs=("continual_dmc_priori", "size1m"),
             steps=None,
             args=continual_args(
-                task=quad_task,
+                task=mujoco_task,
                 interval=1_000_000,
-                mechanism="WSC_grad_scale_constant",
-                reset_frequency=50_000,
-                reset_alpha=0.8,
-                replay_cache_chunks=1024,
-                save_every=None,
+                mechanism=mechanism,
+                replay_cache_chunks=4096,
             ),
         ))
-
-    humanoid_task = "humanoid_stand|humanoid_run"
-    humanoid_project = "continual_dreamer_soft_reset_humanoid_stand|humanoid_run_size1m"
-    humanoid_group = "wsc_WSC_grad_scale_constant_all"
-    for seed in SEEDS:
-        jobs.append(Job(
-            key=f"p4_humanoid_wsc_constant_{seed}",
-            priority=4,
-            label=f"humanoid WSC_grad_scale_constant seed {seed}",
-            task=humanoid_task,
-            project=humanoid_project,
-            group=humanoid_group,
-            run=f"seed_{seed}",
-            configs=("continual_dmc_priori", "size1m"),
-            steps=None,
-            args=continual_args(
-                task=humanoid_task,
-                interval=3_000_000,
-                mechanism="WSC_grad_scale_constant",
-                replay_cache_chunks=1024,
-            ),
-        ))
-
-    old_specs = (
-        (
-            "p5_old_walker",
-            5,
-            "walker_run|hopper_hop|fish_swim",
-            "continual_dreamer_soft_reset_size1m",
-            1_000_000,
-            {"no_wsc": 4096, "WSC_grad_scale_constant": 4096},
-        ),
-        (
-            "p6_old_dog",
-            6,
-            "dog_stand|dog_walk|dog_trot",
-            "continual_dreamer_soft_reset_dog_stand|dog_walk|dog_trot_size1m",
-            2_000_000,
-            {"no_wsc": 1024, "WSC_grad_scale_constant": 4096},
-        ),
-    )
-    for prefix, priority, task, project, interval, cache_by_mechanism in old_specs:
-        for mechanism in ("no_wsc", "WSC_grad_scale_constant"):
-            group, _, _ = mechanism_group(mechanism)
-            for seed in SEEDS:
-                jobs.append(Job(
-                    key=f"{prefix}_{mechanism}_{seed}",
-                    priority=priority,
-                    label=f"old target {task} {mechanism} seed {seed}",
-                    task=task,
-                    project=project,
-                    group=group,
-                    run=f"seed_{seed}",
-                    configs=("continual_dmc_priori", "size1m"),
-                    steps=None,
-                    args=continual_args(
-                        task=task,
-                        interval=interval,
-                        mechanism=mechanism,
-                        replay_cache_chunks=cache_by_mechanism[mechanism],
-                    ),
-                ))
 
     return jobs
 
@@ -442,28 +417,7 @@ def bootstrap_cleanup(state: dict) -> None:
     if state.get("bootstrap_done"):
         return
 
-    old_monitor_pids = pgrep(r"/tmp/codex_wsc_monitor.py") + pgrep(r"auto_scripts/wsc_health_monitor.py")
-    terminate_processes(old_monitor_pids, "bootstrap stopped old monitors")
-
-    old_scheduler_pids = pgrep(r"auto_scripts/wsc_continual_scheduler.sh")
-    terminate_processes(old_scheduler_pids, "bootstrap stopped old queueing shells")
-
-    items = dreamer_items()
-    nonkeep = [item["pid"] for item in items if not is_old_keep(item)]
-    terminate_processes(nonkeep, "bootstrap killed non-target old Dreamer runs")
-
-    resumed = []
-    resumed_at = time.time()
-    for item in dreamer_items():
-        if is_old_keep(item) and item["stat"].startswith("T"):
-            send(item["pid"], signal.SIGCONT)
-            resumed.append(item["pid"])
-    if resumed:
-        running_since = state.setdefault("running_since", {})
-        for pid in resumed:
-            running_since[str(pid)] = resumed_at
-        log(f"bootstrap resumed preserved target runs pids={sorted(resumed)}")
-
+    log("bootstrap cleanup skipped; preserving all pre-existing Dreamer processes")
     state["bootstrap_done"] = True
     state["bootstrap_at"] = time.time()
 
@@ -540,6 +494,7 @@ def wandb_health_issue(logdir: str, now: float, since: float, fresh_grace: int) 
             return f"no wandb run age={int(age)}s logdir={logdir}"
         return None
 
+    latest_file_age = None
     files = [path for path in run.rglob("*") if path.is_file()]
     if files:
         latest_file_age = now - max(path.stat().st_mtime for path in files)
@@ -554,6 +509,8 @@ def wandb_health_issue(logdir: str, now: float, since: float, fresh_grace: int) 
 
     debug_age = now - debug.stat().st_mtime
     if debug_age > fresh_grace:
+        if latest_file_age is not None and latest_file_age <= fresh_grace:
+            return None
         return f"stale wandb internal log age={int(debug_age)}s logdir={logdir}"
 
     try:
@@ -563,6 +520,9 @@ def wandb_health_issue(logdir: str, now: float, since: float, fresh_grace: int) 
     fatal_pos = max(tail.rfind("ERROR+4"), tail.lower().rfind("fatal error"))
     ok_pos = tail.rfind('"status":"200 OK"')
     if fatal_pos > ok_pos:
+        fatal_tail = tail[fatal_pos:].lower()
+        if "filestream at capacity" in fatal_tail and "retry after" in fatal_tail:
+            return None
         return f"wandb filestream fatal logdir={logdir}"
     return None
 
@@ -696,14 +656,14 @@ def health_report(state: dict, items: list[dict], now: float) -> tuple[bool, lis
         since = float(running_since.get(str(item["pid"]), now - item.get("etimes", 0)))
         age = now - since
         is_crafter = is_crafter_logdir(item["logdir"])
-        fresh_grace = CRAFTER_FRESH_GRACE_SECONDS if is_crafter else FRESH_GRACE_SECONDS
-        wandb_issue = wandb_health_issue(item["logdir"], now, since, fresh_grace)
-        if wandb_issue:
-            bad.append(f"{item['pid']} {wandb_issue}")
-            continue
+        fresh_grace = no_fresh_metrics_grace(item["logdir"])
         if metrics is None or mtime <= since:
             if age > fresh_grace:
                 bad.append(f"{item['pid']} no fresh metrics age={int(age)}s logdir={item['logdir']}")
+            continue
+        wandb_issue = wandb_health_issue(item["logdir"], now, since, fresh_grace)
+        if wandb_issue:
+            bad.append(f"{item['pid']} {wandb_issue}")
             continue
         metric_age = now - mtime
         if metric_age > fresh_grace:
@@ -734,15 +694,26 @@ def health_report(state: dict, items: list[dict], now: float) -> tuple[bool, lis
         key = str(item["pid"])
         prev = health_below.get(key, {})
         count = int(prev.get("count", 0) or 0)
-        if prev.get("step") != step:
-            count = count + 1 if below else 0
+        same_sample = prev.get("step") == step and float(prev.get("mtime", 0) or 0) == float(mtime)
+        repeat_seconds = low_fps_repeat_seconds(item["logdir"])
+        last_count_at = float(prev.get("last_count_at", 0) or 0)
+        if below:
+            if not same_sample or now - last_count_at >= repeat_seconds:
+                count += 1
+                last_count_at = now
+        else:
+            count = 0
+            last_count_at = 0
         health_below[key] = {
             "step": step,
+            "mtime": mtime,
+            "last_count_at": last_count_at,
             "count": count,
             "fps": fps_value,
             "threshold": threshold,
         }
-        if below and count >= 2:
+        required_count = low_fps_confirm_count(item["logdir"])
+        if below and count >= required_count:
             bad.append(
                 f"{item['pid']} fps={fps_value:.2f} threshold={threshold:.2f} "
                 f"step={step} count={count} logdir={item['logdir']}"
@@ -750,6 +721,31 @@ def health_report(state: dict, items: list[dict], now: float) -> tuple[bool, lis
     state["last_fps_summary"] = summaries[-20:]
     state["last_low_fps_launch_blockers"] = launch_blockers[-20:]
     return not bad, bad
+
+
+def passive_no_wsc_report(state: dict, items: list[dict], now: float) -> None:
+    summaries = []
+    for item in items:
+        if item["stat"].startswith("T") or "/no_wsc/" not in item.get("logdir", ""):
+            continue
+        metrics, mtime = latest_metrics(item["logdir"])
+        if metrics is None:
+            summaries.append(f"{item['pid']} gpu={item['gpu']} no_metrics {item['logdir']}")
+            continue
+        fps = metrics.get("fps/policy")
+        step = metrics.get("step")
+        age = int(now - mtime) if mtime else -1
+        try:
+            fps_text = f"{float(fps):.2f}"
+        except Exception:
+            fps_text = "?"
+        summaries.append(
+            f"{item['pid']} gpu={item['gpu']} step={step} fps={fps_text} "
+            f"metric_age={age}s {item['logdir']}"
+        )
+    state["last_passive_no_wsc_summary"] = summaries[-6:]
+    if summaries:
+        log(f"passive no_wsc monitor: {'; '.join(summaries[-6:])}")
 
 
 def mark_finished(state: dict, jobs: list[Job], items: list[dict]) -> None:
@@ -795,6 +791,48 @@ def mark_finished(state: dict, jobs: list[Job], items: list[dict]) -> None:
                 log(f"job failed after max attempts: {key} logdir={logdir} step={step}")
 
 
+def enforce_running_step_limits(state: dict, jobs: list[Job], items: list[dict]) -> bool:
+    jobs_by_logdir = {job.logdir: job for job in jobs}
+    jobs_state = state.setdefault("jobs", {})
+    changed = False
+    for item in items:
+        if item["stat"].startswith("T"):
+            continue
+        job = jobs_by_logdir.get(item.get("logdir", ""))
+        if not job or not job.steps:
+            continue
+        metrics, _mtime = latest_metrics(job.logdir)
+        if not metrics:
+            continue
+        try:
+            step = int(metrics.get("step", 0) or 0)
+        except Exception:
+            continue
+        if step < int(job.steps):
+            continue
+        terminate_processes(
+            [int(item["pid"])],
+            f"step limit stopped managed job {job.key}",
+        )
+        record = jobs_state.setdefault(job.key, {})
+        record.update({
+            "status": "done",
+            "done_at": time.time(),
+            "pid": item["pid"],
+            "logdir": job.logdir,
+            "priority": job.priority,
+            "label": job.label,
+            "steps": job.steps,
+            "completed_step": step,
+        })
+        done = ROOT / job.logdir / "scheduler_done"
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.touch()
+        log(f"job completed by step limit: {job.key} logdir={job.logdir} step={step}")
+        changed = True
+    return changed
+
+
 def running_by_logdir(items: list[dict]) -> dict[str, dict]:
     return {item["logdir"]: item for item in items}
 
@@ -814,11 +852,23 @@ def active_counts(items: list[dict]) -> tuple[int, dict[int, int]]:
     return total, by_gpu
 
 
+def managed_items(state: dict, items: list[dict]) -> list[dict]:
+    jobs_state = state.setdefault("jobs", {})
+    managed_pids = {
+        int(record.get("pid") or 0)
+        for record in jobs_state.values()
+        if record.get("status") == "running"
+    }
+    return [item for item in items if item["pid"] in managed_pids]
+
+
 def choose_gpu(items: list[dict]) -> int | None:
     gpus = gpu_info()
     _total, counts = active_counts(items)
     candidates = []
     for idx, info in gpus.items():
+        if idx in EXCLUDE_GPUS:
+            continue
         count = counts.get(idx, 0)
         if count >= MAX_RUNS_PER_GPU:
             continue
@@ -873,28 +923,32 @@ def queued_jobs(state: dict, jobs: list[Job], items: list[dict], now: float) -> 
 def protect_health(state: dict, bad: list[str]) -> None:
     jobs_state = state.setdefault("jobs", {})
     bad_pids = set()
+    bad_ratio: dict[int, float] = {}
     for item in bad:
         first = item.split(None, 1)[0]
-        if first.isdigit():
-            bad_pids.add(int(first))
+        if not first.isdigit():
+            continue
+        pid = int(first)
+        bad_pids.add(pid)
+        fields = {}
+        for token in item.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            fields[key] = value
+        try:
+            fps = float(fields["fps"])
+            threshold = float(fields["threshold"])
+            if threshold > 0:
+                bad_ratio[pid] = fps / threshold
+        except Exception:
+            pass
 
     managed_pids = {
         int(record.get("pid") or 0)
         for record in jobs_state.values()
         if record.get("status") == "running"
     }
-    unmanaged_bad = [
-        pid for pid in sorted(bad_pids)
-        if pid not in managed_pids and alive(pid)
-    ]
-    if unmanaged_bad:
-        paused = []
-        for pid in unmanaged_bad:
-            send(pid, signal.SIGSTOP)
-            paused.append(pid)
-        log(f"health protection paused unmanaged low-FPS runs pids={paused}; bad={'; '.join(bad[:3])}")
-        return
-
     candidates = []
     for key, record in jobs_state.items():
         if record.get("status") != "running":
@@ -905,17 +959,27 @@ def protect_health(state: dict, bad: list[str]) -> None:
         priority = int(record.get("priority") or 99)
         started = float(record.get("started_at") or 0)
         is_bad = pid in bad_pids
-        candidates.append((0 if is_bad else 1, -priority, -started, key, record))
+        # For simultaneous bad jobs, stop the one violating health most
+        # severely before falling back to lower scheduler priority and recency.
+        ratio = bad_ratio.get(pid, math.inf if is_bad else math.inf)
+        candidates.append((0 if is_bad else 1, ratio, -priority, -started, key, record))
 
     if not candidates:
         return
 
     candidates.sort()
-    _rank, _priority, _started, key, record = candidates[0]
+    _rank, _ratio, _priority, _started, key, record = candidates[0]
     pid = int(record["pid"])
     terminate_processes([pid], f"health protection stopped managed job {key}")
     record["status"] = "queued"
-    record["retry_after"] = time.time() + 1800
+    label_logdir = f"{record.get('label', '')} {record.get('logdir', '')}".lower()
+    if any("wandb" in item.lower() for item in bad):
+        retry_delay = 60
+    elif "humanoid" in label_logdir or int(record.get("priority") or 99) <= 2:
+        retry_delay = 300
+    else:
+        retry_delay = 1800
+    record["retry_after"] = time.time() + retry_delay
     record["stopped_for_health_at"] = time.time()
     log(f"health protection requeued {key} after FPS/freshness block; bad={'; '.join(bad[:3])}")
 
@@ -985,25 +1049,10 @@ def compact_logs(state: dict) -> None:
         return
     text = LOG.read_text(errors="ignore")
     lines = [line for line in text.splitlines() if line.strip()]
-    if len(text) < 24000 and now - state.get("last_log_compact", 0) < LOG_COMPACT_SECONDS:
-        return
 
-    scheduler_lines = [line for line in lines if " | Scheduler:" in line]
-    keep_other = [
-        line for line in lines
-        if " | Scheduler:" not in line and " | Background monitor:" not in line
-    ]
-    recent = scheduler_lines[-5:]
-    jobs = state.get("jobs", {})
-    counts = {}
-    for record in jobs.values():
-        counts[record.get("status", "queued")] = counts.get(record.get("status", "queued"), 0) + 1
-    summary = (
-        f"{stamp()} | Scheduler summary: active 2026-07-23 schedule; "
-        f"job_status={counts}; recent details kept in last {len(recent)} scheduler records."
-    )
-    retained_prefix = keep_other[-20:]
-    new_lines = retained_prefix + [summary] + recent
+    important = [line for line in lines if "Important history:" in line][-1:]
+    recent = [line for line in lines if "Important history:" not in line][-6:]
+    new_lines = important + recent
     LOG.write_text("\n".join(new_lines).rstrip() + "\n")
     state["last_log_compact"] = now
 
@@ -1024,9 +1073,13 @@ def loop_once(state: dict) -> None:
     jobs = build_jobs()
     items = dreamer_items()
     update_running_since(state, items, now)
+    passive_no_wsc_report(state, items, now)
     mark_finished(state, jobs, items)
+    if enforce_running_step_limits(state, jobs, items):
+        items = dreamer_items()
+    owned_items = managed_items(state, items)
 
-    ok, bad = health_report(state, items, now)
+    ok, bad = health_report(state, owned_items, now)
     if not ok:
         state["last_health_block"] = bad
         running_total, _counts = active_counts(items)
@@ -1038,7 +1091,7 @@ def loop_once(state: dict) -> None:
         compact_logs(state)
         return
     state.pop("last_health_block", None)
-    remote_wandb_repair(state, items, now)
+    remote_wandb_repair(state, owned_items, now)
 
     low_fps_blockers = state.get("last_low_fps_launch_blockers") or []
     if low_fps_blockers:
@@ -1109,7 +1162,7 @@ def main() -> None:
     PID_PATH.write_text(str(os.getpid()) + "\n")
     state = load_state()
     state.setdefault("started_at", time.time())
-    log("daemon started for 2026-07-23 schedule")
+    log("foreground scheduler started for wsc_skip_last_layer_constant_all schedule")
     while True:
         try:
             loop_once(state)

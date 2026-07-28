@@ -95,6 +95,9 @@ defaults:
     #   wsc_no_scale_init
     #   wsc_no_scale_constant
     #   wsc_no_scale_factor
+    #   wsc_skip_last_layer_init
+    #   wsc_skip_last_layer_constant
+    #   wsc_skip_last_layer_factor
     # Set reset_mechanism to disabled/off/none to disable WSC.
     reset_mechanism: disabled
     # Reset/WSC targets are defined in embodied/jax/reset_targets.py.
