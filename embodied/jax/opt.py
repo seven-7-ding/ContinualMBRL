@@ -68,6 +68,10 @@ class Optimizer(nj.Module):
       invscale = 1 / self.grad_scale.read()
       grads = jax.tree.map(lambda x: x * invscale, grads)
 
+    if wsc_controller is not None:
+      grads, l2_init_metrics = wsc_controller.add_l2_init_grads(params, grads)
+      metrics.update(l2_init_metrics)
+
     raw_grads = grads
 
     # Gradient-based ReDo: reset dormant neurons before the optimiser update.

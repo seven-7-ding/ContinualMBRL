@@ -232,27 +232,36 @@ class Agent(embodied.jax.Agent):
       nn.NORM_CALLBACK = lambda t, name: (
         _acts.__setitem__(name, t) or _old_norm_cb(t, name)
         if nn._SCAN_DEPTH[0] == 0 else _old_norm_cb(t, name))
-      # nn.LAYER_CALLBACK = lambda t, name: _acts.__setitem__(name, t) or _old_cb(t, name)
-      _repfeat = sg(outs['repfeat'])
-      # enc: no internal scan → mlp{i}/cnn{i} activations captured.
-      # _ = self.enc({}, obs, obs['is_first'], training=False)
-      # dyn: _core/_observe run inside nj.scan; their activations are
-      # suppressed by the _SCAN_DEPTH guard and cannot be captured via
-      # side-effects.  _prior (prior projection layers) is scan-free and
-      # can be called directly on the already-computed deter sequence.
-      # _ = self.dyn._prior(nn.cast(_repfeat['deter']))
-      # dec: no internal scan → sp1/conv{i} activations captured.
-      # _ = self.dec({}, _repfeat, obs['is_first'], training=False)
-      # rew/con: use repfeat (same distribution as training).
-      # pol/val: use imgfeat (same distribution as imag_loss training).
-      _repf = self.feat2tensor(_repfeat)
-      _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
-      _ = self.rew(_repf, 2)
-      _ = self.con(_repf, 2)
-      _ = self.pol(_imgf, 2)
-      _ = self.val(_imgf, 2)
-      nn.NORM_CALLBACK = _old_norm_cb
-      nn.LAYER_CALLBACK = _old_cb
+      try:
+        _repfeat = sg(outs['repfeat'])
+        # enc: no internal scan -> mlp{i}/cnn{i} activations captured.
+        _ = self.enc({}, obs, obs['is_first'], training=False)
+        # dyn: _core/_observe run inside nj.scan; their activations are
+        # suppressed by the _SCAN_DEPTH guard and cannot be captured via
+        # side-effects. _prior is scan-free and can be called directly on
+        # the already-computed deter sequence.
+        _flat = lambda x: x.reshape((-1, *x.shape[2:]))
+        _flatfeat = jax.tree.map(_flat, _repfeat)
+        _flatact = self._action_tensor(self._next_actions(prevact))
+        _flatact = _flatact.reshape((-1, _flatact.shape[-1]))
+        _ = self.dyn._core(
+            _flatfeat['deter'], _flatfeat['stoch'], _flatact)
+        _tokens = outs['tokens'].reshape((math.prod(outs['tokens'].shape[:2]), -1))
+        _ = self.dyn.obslogit_from_deter_tokens(_flatfeat['deter'], _tokens)
+        _ = self.dyn._prior(nn.cast(_repfeat['deter']))
+        # dec: no internal scan -> sp1/conv{i} activations captured.
+        _ = self.dec({}, _repfeat, obs['is_first'], training=False)
+        # rew/con: use repfeat (same distribution as training).
+        # pol/val: use imgfeat (same distribution as imag_loss training).
+        _repf = self.feat2tensor(_repfeat)
+        _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
+        _ = self.rew(_repf, 2)
+        _ = self.con(_repf, 2)
+        _ = self.pol(_imgf, 2)
+        _ = self.val(_imgf, 2)
+      finally:
+        nn.NORM_CALLBACK = _old_norm_cb
+        nn.LAYER_CALLBACK = _old_cb
       mets.update(self.act_redo.step(_acts))
 
     metrics.update(mets)
@@ -594,6 +603,9 @@ class Agent(embodied.jax.Agent):
         factor_max=getattr(wsc_cfg, 'factor_max', 100.0) if wsc_cfg else 100.0,
         scale_min=getattr(wsc_cfg, 'scale_min', 1e-4) if wsc_cfg else 1e-4,
         scale_max=getattr(wsc_cfg, 'scale_max', 1e4) if wsc_cfg else 1e4,
+        last_l2_init_weight_decay=(
+            getattr(wsc_cfg, 'last_l2_init_weight_decay', 2e-5)
+            if wsc_cfg else 2e-5),
         nograd_start_step=(
             getattr(wsc_cfg, 'nograd_start_step', 10000)
             if wsc_cfg else 10000),

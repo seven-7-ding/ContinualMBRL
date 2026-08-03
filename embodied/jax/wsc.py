@@ -1,5 +1,4 @@
 import math
-
 import jax.numpy as jnp
 import ninjax as nj
 
@@ -9,6 +8,8 @@ f32 = jnp.float32
 
 LAYER_PARAM_NAMES = frozenset(('kernel', 'bias'))
 SCALE_PARAM_NAME = 'wsc_scale'
+LEGACY_NON_WSC_MECHANISMS = frozenset((
+    'l2_init', 'continual_backprop', 'l2_decay_preupdate', 'no_wsc'))
 
 
 def metric_name(path):
@@ -92,6 +93,24 @@ def layer_groups(params, target, require_following_rmsnorm=False):
   return groups
 
 
+def skipped_layer_groups(params, target):
+  all_groups = layer_groups(params, target)
+  controlled_groups = layer_groups(
+      params, target, require_following_rmsnorm=True)
+  return {
+      path: keys
+      for path, keys in all_groups.items()
+      if path not in controlled_groups}
+
+
+def layer_params(params, target, require_missing_rmsnorm=False):
+  if require_missing_rmsnorm:
+    groups = skipped_layer_groups(params, target)
+  else:
+    groups = layer_groups(params, target)
+  return {key: f32(params[key]) for keys in groups.values() for key in keys}
+
+
 def initial_layer_norms(params, target, eps=1e-8, require_following_rmsnorm=False):
   norms = {}
   for path in layer_groups(params, target, require_following_rmsnorm):
@@ -120,6 +139,8 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
   lower = mechanism.lower()
   if lower in ('', 'none', 'false', 'disabled', 'off'):
     return False, 'nograd', default_norm_mode
+  if lower in LEGACY_NON_WSC_MECHANISMS:
+    return False, 'nograd', default_norm_mode
   if not lower.startswith('wsc'):
     raise ValueError(f'Unknown WSC mechanism: {mechanism}')
   if is_skip_last_layer_mechanism(lower) or 'no_scale' in lower or 'noscale' in lower:
@@ -139,7 +160,26 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
 
 
 def is_skip_last_layer_mechanism(mechanism):
-  return 'skip_last_layer' in str(mechanism or '').lower()
+  lower = str(mechanism or '').lower()
+  return 'skip_last_layer' in lower or 'last_l2_init' in lower
+
+
+def is_last_l2_init_mechanism(mechanism):
+  return 'last_l2_init' in str(mechanism or '').lower()
+
+
+def parse_last_l2_init_weight_decay(mechanism, default=2e-5):
+  lower = str(mechanism or '').lower()
+  if 'last_l2_init' not in lower:
+    return float(default)
+  suffix = lower.split('last_l2_init', 1)[1].lstrip('_')
+  if not suffix:
+    return float(default)
+  token = suffix.split('_', 1)[0]
+  try:
+    return float(token)
+  except ValueError:
+    return float(default)
 
 
 class WSC(nj.Module):
@@ -155,6 +195,7 @@ class WSC(nj.Module):
   factor_max: float = 100.0
   scale_min: float = 1e-4
   scale_max: float = 1e4
+  last_l2_init_weight_decay: float = 2e-5
   nograd_start_step: int = 10000
   scale_adjust_min: float = 0.1
   scale_adjust_max: float = 10.0
@@ -167,6 +208,9 @@ class WSC(nj.Module):
     self._norm_mode = norm_mode
     self._target = reset_targets.canonical_target(self.target)
     self._skip_last_layer = is_skip_last_layer_mechanism(self.mechanism)
+    self._last_l2_init = is_last_l2_init_mechanism(self.mechanism)
+    self._last_l2_init_weight_decay = parse_last_l2_init_weight_decay(
+        self.mechanism, self.last_l2_init_weight_decay)
 
   @property
   def active(self):
@@ -189,6 +233,14 @@ class WSC(nj.Module):
     return self._skip_last_layer
 
   @property
+  def last_l2_init(self):
+    return self._last_l2_init
+
+  @property
+  def parsed_last_l2_init_weight_decay(self):
+    return self._last_l2_init_weight_decay
+
+  @property
   def nograd_scale(self):
     return self.active and self.parsed_scale_mode == 'nograd'
 
@@ -204,6 +256,23 @@ class WSC(nj.Module):
         params, self.parsed_target,
         require_following_rmsnorm=self.skip_last_layer)
 
+  def _l2_init_layer_groups(self, params):
+    if not self.last_l2_init:
+      return {}
+    all_groups = self._all_layer_groups(params)
+    controlled_groups = self._controlled_layer_groups(params)
+    return {
+        path: keys
+        for path, keys in all_groups.items()
+        if path not in controlled_groups}
+
+  def _l2_init_params_tree(self, params):
+    return self.sub(
+        'last_l2_init_params', nj.Tree,
+        lambda params: layer_params(
+            params, self.parsed_target, require_missing_rmsnorm=True),
+        params)
+
   def zero_scale_grads(self, grads):
     if not self.active or self.parsed_scale_mode not in ('nograd', 'no_scale'):
       return grads
@@ -215,14 +284,21 @@ class WSC(nj.Module):
   def init_params(self, params):
     if not self.active:
       return params, {}
-    if self.parsed_norm_mode not in ('constant', 'init'):
-      return params, {}
     all_groups = self._all_layer_groups(params)
     if not all_groups:
       return params, {}
     groups = self._controlled_layer_groups(params)
     new_params = dict(params)
     metrics = {}
+    l2_init_groups = self._l2_init_layer_groups(params)
+    if self.last_l2_init:
+      self._l2_init_params_tree(params).read()
+      metrics['wsc/last_l2_init_weight_decay'] = jnp.asarray(
+          self.parsed_last_l2_init_weight_decay, f32)
+      metrics['wsc/last_l2_init_layer_count'] = jnp.asarray(
+          len(l2_init_groups), f32)
+    if self.parsed_norm_mode not in ('constant', 'init'):
+      return new_params, metrics
     if self.parsed_norm_mode == 'init':
       target_tree = self.sub(
           'target_norms', nj.Tree,
@@ -262,6 +338,40 @@ class WSC(nj.Module):
         metrics[f'wsc/init_target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
         metrics[f'wsc/init_controlled/{lname}'] = jnp.asarray(0.0, f32)
     return new_params, metrics
+
+  def add_l2_init_grads(self, params, grads):
+    if not self.active or not self.last_l2_init:
+      return grads, {}
+    groups = self._l2_init_layer_groups(params)
+    if not groups:
+      return grads, {}
+    init_params = self._l2_init_params_tree(params).read()
+    weight_decay = jnp.asarray(self.parsed_last_l2_init_weight_decay, f32)
+    new_grads = dict(grads)
+    metrics = {
+        'wsc/last_l2_init_weight_decay': weight_decay,
+        'wsc/last_l2_init_layer_count': jnp.asarray(len(groups), f32),
+    }
+    total_loss = jnp.asarray(0.0, f32)
+    for path, keys in groups.items():
+      sqdist = jnp.asarray(0.0, f32)
+      for key in keys:
+        if key not in params or key not in init_params:
+          continue
+        diff = f32(params[key]) - f32(init_params[key])
+        sqdist = sqdist + jnp.square(diff).sum()
+        if key in new_grads:
+          penalty_grad = weight_decay * diff
+          new_grads[key] = (
+              new_grads[key] +
+              penalty_grad.astype(new_grads[key].dtype))
+      lname = metric_name(path)
+      loss = 0.5 * weight_decay * sqdist
+      total_loss = total_loss + loss
+      metrics[f'wsc/last_l2_init_loss/{lname}'] = f32(loss)
+      metrics[f'wsc/last_l2_init_delta_norm/{lname}'] = jnp.sqrt(sqdist)
+    metrics['wsc/last_l2_init_loss'] = f32(total_loss)
+    return new_grads, metrics
 
   def step(self, pre_params, post_params, outputs=None, step=None, lr=None):
     if not self.active:

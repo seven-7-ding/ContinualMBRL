@@ -98,6 +98,9 @@ defaults:
     #   wsc_skip_last_layer_init
     #   wsc_skip_last_layer_constant
     #   wsc_skip_last_layer_factor
+    #   wsc_init_last_l2_init
+    #   wsc_constant_last_l2_init
+    #   wsc_factor_last_l2_init
     # Set reset_mechanism to disabled/off/none to disable WSC.
     reset_mechanism: disabled
     # Reset/WSC targets are defined in embodied/jax/reset_targets.py.
@@ -175,6 +178,15 @@ defaults:
       norm_mode: init
       target_norm: 1.0
       scale_factor: 0.999
+      weight_decay: 2e-5
+      l2_init_weight: 2e-5
+      cbp_eta: 0.99
+      cbp_maturity: 5000
+      cbp_replacement_rate: 1e-4
+      # For wsc_{constant/init/factor}_last_l2_init_{weight_decay}_*
+      # mechanisms: apply l2-init penalty to target layers not followed by
+      # RMSNorm and therefore not controlled by WSC Frobenius projection.
+      last_l2_init_weight_decay: 2e-5
       eps: 1e-8
       factor_min: 0.01
       factor_max: 100.0

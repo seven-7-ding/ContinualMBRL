@@ -2,12 +2,22 @@
 
 ## 2026-07-28 WSC Skip Last Layer Run
 
-- Active foreground scheduler session: `35413`.
+- Foreground scheduler session `88402` was stopped by explicit user request at 2026-07-30 15:52 HKT; do not assume active Codex monitoring is still running.
 - Scheduler command uses `auto_scripts/codex_experiment_scheduler.py` with state `logdir/scheduler/codex_wsc_skip_last_layer_state.json` and PID file `logdir/scheduler/codex_wsc_skip_last_layer.pid`.
-- Current user requirement: keep polling in the foreground and do not stop existing experiments unless explicitly requested.
+- Latest user requirement: monitoring has ended; Dreamer experiments should continue in the background and should not be stopped unless explicitly requested.
+- Current foreground scheduler was restarted at 2026-07-28 22:58 HKT with `CODEX_SCHED_MIN_FPS=0`, `CODEX_SCHED_CRAFTER_MIN_FPS=0`, and very large freshness grace values so FPS or short logging gaps do not trigger health stops.
 - Managed new queue is exactly 9 runs under group `wsc_skip_last_layer_constant_all`: dog seeds `1000/2000/3000`, crafter seeds `1000/2000/3000`, and walker/hopper/fish seeds `1000/2000/3000`.
 - Six pre-existing `no_wsc` Dreamer processes are passive monitoring targets only.
 - Dog seed1000 hit transient `ptxas` 139 twice; scheduler was restarted with `CODEX_SCHED_MAX_ATTEMPTS=100`, `CODEX_SCHED_LAUNCH_BATCH=1`, and the job was requeued without stopping other runs.
+
+## 2026-08-01 WSC Last L2 Init Run
+
+- Added `wsc_{constant/init/factor}_last_l2_init_{weight_decay}_{target}` support. It behaves like skip-last-layer WSC for RMSNorm-followed target layers and applies l2-init gradient penalty to target layers skipped because they are not followed by RMSNorm.
+- `wsc_constant_last_l2_init_2e-5_all` experiments were launched directly, not under the old foreground scheduler.
+- Old `wsc_skip_last_layer_constant_all` Crafter seeds were stopped by explicit user request; dog/simple skip-last-layer runs were left untouched.
+- New live PIDs at launch confirmation: Crafter `606833/606834/606835` on GPUs `3/4/1`; continual MuJoCo `606836/613245/606838` on GPUs `0/5/2`.
+- MuJoCo seed `2000` hit transient JAX/XLA `ptxas` 139 twice on compile and was relaunched successfully as PID `613245`.
+- Final launch confirmation used process liveness, clean current train.log tails, W&B run directories, and `debug-internal.log` `200 OK` upload entries. Local `metrics.jsonl` had not reached its first write interval yet.
 
 ## Current Objective
 
@@ -128,3 +138,4 @@
 - 2026-07-28 03:44 HKT update: humanoid seed1000, already isolated on GPU1, logged about 1.36 FPS at step 1000000. Foreground scheduler was restarted as session `8102` with `CODEX_SCHED_MIN_FPS=1.3` to keep priority humanoid runs alive.
 - 2026-07-28 04:02 HKT update: W&B health logic was patched so stale `debug-internal.log` alone does not trigger a restart when other files in the active W&B run directory are fresh. This avoids false restarts for priority H/Q runs whose W&B files keep updating. Current foreground scheduler session is `69479`.
 - 2026-07-28 17:05 HKT update: user requested pausing all WSC and exiting the task. Foreground scheduler session `34262` was stopped. Thirteen scheduler-owned live WSC Dreamer main processes and their descendants were terminated and marked queued/paused. Verification found `live_wsc=0`, `live_scheduler=0`, and six live `no_wsc` Dreamer processes: DMC-prior seeds `1000/2000/3000` and walker-chain seeds `1000/2000/3000`.
+- 2026-08-03 22:13 HKT update: activation diagnostics task completed. Backup/resume data for the 27 paused Dreamer runs is in `logdir/resume_backups/dreamer_resume_20260803_211744.{json,sh}`. All 27 backup records were resumed and matched to live Dreamer processes with no duplicates. W&B internal logs were fresh for all 27; local metrics were fresh for 24 and included the new `act_redo/Zombie_Percentage`, `act_redo/Saturation_Percentage`, and `act_redo/Variation_Rank_0.9/0.95/0.99` keys. Baseline Crafter seeds 1000/2000/3000 reached `Start training loop` after loading checkpoints with legacy `wsc/init_params` extras ignored; their local metrics will update at the next natural log interval.

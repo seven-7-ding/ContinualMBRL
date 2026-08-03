@@ -404,6 +404,16 @@ class Agent(embodied.Agent):
         print('Loaded pretrained checkpoint with keys:', list(params.keys()))
         self.params.update(params)
       else:
+        extra_wsc_init = [
+            k for k in params
+            if k.startswith('wsc/init_params/') and k not in self.params]
+        if extra_wsc_init:
+          print(
+              f'Ignoring {len(extra_wsc_init)} legacy checkpoint '
+              'wsc/init_params entries not used by the current agent.')
+          params = {
+              k: v for k, v in params.items()
+              if k not in extra_wsc_init}
         chex.assert_trees_all_equal_shapes(self.params, params)
         jax.tree.map(lambda x: x.delete(), self.params)
 
