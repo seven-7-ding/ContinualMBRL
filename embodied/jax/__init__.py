@@ -9,6 +9,7 @@ from .utils import Normalize
 from .utils import SlowModel
 
 from .opt import Optimizer
+from .wsc import MechanismController
 from .wsc import WSC
 
 from .FineGrainedReDo import FGReDo

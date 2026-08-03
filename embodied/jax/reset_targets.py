@@ -1,4 +1,4 @@
-"""Single entry point for reset/WSC component targets.
+"""Single entry point for component targets used by reset mechanisms.
 
 To add a new target:
   1. Inspect SYSTEM_COMPONENTS for available component names.

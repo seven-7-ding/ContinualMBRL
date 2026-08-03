@@ -77,6 +77,42 @@ def _stable_rank(sv: jnp.ndarray, threshold: float = 0.99) -> jnp.ndarray:
     return f32(jnp.sum(cumsum < threshold) + 1)
 
 
+def _singular_values_for_rank(x: jnp.ndarray) -> jnp.ndarray:
+    """Singular values without materializing large SVD workspaces."""
+    x = f32(x)
+    if x.shape[0] >= x.shape[1]:
+        gram = x.T @ x
+    else:
+        gram = x @ x.T
+    vals = jnp.linalg.eigvalsh(gram)
+    vals = jnp.flip(jnp.maximum(vals, 0.0))
+    return jnp.sqrt(vals)
+
+
+def _variation_rank(activation: jnp.ndarray, threshold: float) -> jnp.ndarray:
+    """Fewest neurons whose sample variances explain threshold of total variance."""
+    act_2d = f32(activation).reshape((-1, activation.shape[-1]))
+    count = max(int(act_2d.shape[0]), 1)
+    centered = act_2d - act_2d.mean(axis=0, keepdims=True)
+    var = jnp.square(centered).sum(axis=0) / jnp.asarray(max(count - 1, 1), f32)
+    total = var.sum()
+    cumsum = jnp.cumsum(jnp.flip(jnp.sort(var)))
+    rank = jnp.minimum(
+        jnp.sum(cumsum < total * jnp.asarray(threshold, f32)) + 1,
+        jnp.asarray(var.shape[0], jnp.int32))
+    return jnp.where(total > 1e-8, f32(rank), jnp.asarray(0.0, f32))
+
+
+def _zombie_percentage(preactivation: jnp.ndarray) -> jnp.ndarray:
+    pre_2d = f32(preactivation).reshape((-1, preactivation.shape[-1]))
+    return f32(jnp.all(pre_2d > 0, axis=0)).mean() * 100
+
+
+def _saturation_percentage(preactivation: jnp.ndarray) -> jnp.ndarray:
+    pre_2d = f32(preactivation).reshape((-1, preactivation.shape[-1]))
+    return f32(jnp.all(pre_2d >= 0, axis=0)).mean() * 100
+
+
 def _is_output_layer(path: str) -> bool:
     """Whether a module path names a prediction/output projection layer."""
     return path.split('/')[-1] in _OUTPUT_LAYER_NAMES
@@ -122,10 +158,18 @@ def _is_rmsnorm_activation(path: str, ctx: Dict) -> bool:
     return (path + '/scale') in ctx and 'norm' in path.split('/')[-1]
 
 
+def _following_rmsnorm_path(path: str) -> str | None:
+    try:
+        from . import wsc
+        return wsc.following_rmsnorm_path(path)
+    except Exception:
+        return None
+
+
 def matrix_diversity_stats(x: jnp.ndarray, threshold: float = 0.99) -> Dict[str, jnp.ndarray]:
     """Rank and per-dimension std metrics for a [batch, dim] matrix."""
     x = f32(x)
-    sv = jnp.linalg.svd(x, compute_uv=False)
+    sv = _singular_values_for_rank(x)
     return {
         'erank': _effective_rank(sv),
         'srank': _stable_rank(sv, threshold),
@@ -222,6 +266,8 @@ class FGReDo(nj.Module):
                 continue
 
             kernel = ctx[kkey]
+            norm_path = _following_rmsnorm_path(path)
+            norm_act = activations.get(norm_path) if norm_path else None
             score = _neuron_score(act)
             norm_score = score / (score.mean() + 1e-9)
 
@@ -237,11 +283,11 @@ class FGReDo(nj.Module):
             # SVD-based rank metrics – gated on should_analyze.
             if need_erank or need_srank:
                 act_2d = f32(act).reshape(-1, act.shape[-1])
-                k = min(act_2d.shape[0], act_2d.shape[1])
                 sv = jax.lax.cond(
                     should_analyze,
-                    lambda a: jnp.linalg.svd(a, compute_uv=False),
-                    lambda a: jnp.zeros(k, f32),
+                    _singular_values_for_rank,
+                    lambda a: jnp.zeros(
+                        min(a.shape[0], a.shape[1]), f32),
                     act_2d)
                 if need_erank:
                     metrics[f'{self.name}/erank/{lname}'] = jnp.where(
@@ -249,6 +295,18 @@ class FGReDo(nj.Module):
                 if need_srank:
                     metrics[f'{self.name}/srank/{lname}'] = jnp.where(
                         should_analyze, _stable_rank(sv, self.rank_threshold), jnp.nan)
+
+            if norm_act is not None:
+                metrics[f'{self.name}/Zombie_Percentage/{lname}'] = _when_analyzing(
+                    should_analyze, lambda norm_act=norm_act: _zombie_percentage(norm_act))
+                metrics[f'{self.name}/Saturation_Percentage/{lname}'] = _when_analyzing(
+                    should_analyze, lambda norm_act=norm_act: _saturation_percentage(norm_act))
+                for threshold in (0.9, 0.95, 0.99):
+                    metrics[f'{self.name}/Variation_Rank_{threshold}/{lname}'] = (
+                        _when_analyzing(
+                            should_analyze,
+                            lambda act=act, threshold=threshold: (
+                                _variation_rank(act, threshold))))
 
             if 'reset' not in self.log_item:
                 continue

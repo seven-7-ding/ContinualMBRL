@@ -423,7 +423,7 @@ class Agent(embodied.Agent):
 
   def reset_params(self, *_, **__):
     raise NotImplementedError(
-        'Legacy reset mechanisms were removed. Use WSC via '
+        'Legacy reset mechanisms were removed. Use parameter mechanisms via '
         '--run.reset_mechanism and --run.reset_target.')
 
   def _canonical_train_mode(self, mode):

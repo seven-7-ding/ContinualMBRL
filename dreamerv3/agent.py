@@ -78,10 +78,6 @@ class Agent(embodied.jax.Agent):
     self.modules = [
         self.dyn, self.enc, self.dec, self.rew, self.con, self.pol, self.val]
     self.wsc = self._make_wsc()
-    nn.WSC_ENABLED = bool(self.wsc and self.wsc.active)
-    nn.WSC_TARGET = self.wsc.parsed_target if self.wsc else 'all'
-    nn.WSC_USE_OUTPUT_SCALE = (
-        bool(self.wsc and self.wsc.active and self.wsc.uses_output_scale))
     opt, lr_schedule = self._make_opt(**config.opt)
     self.opt = embodied.jax.Optimizer(
         self.modules, opt, lr_schedule=lr_schedule, summary_depth=1,
@@ -192,12 +188,12 @@ class Agent(embodied.jax.Agent):
           jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
           should_analyze_data))
 
-    if self.wsc and self.wsc.active:
-      _wsc_outputs = {}
-      _old_wsc_cb = nn.WSC_OUTPUT_CALLBACK
-      nn.WSC_OUTPUT_CALLBACK = lambda t, name, uses_scale: (
-          _wsc_outputs.__setitem__(name, sg(t)) or _old_wsc_cb(t, name, uses_scale)
-          if uses_scale else _old_wsc_cb(t, name, uses_scale))
+    if self.wsc and self.wsc.needs_activations:
+      _cbp_acts = {}
+      _old_cb = nn.LAYER_CALLBACK
+      nn.LAYER_CALLBACK = lambda t, name: (
+          _cbp_acts.__setitem__(name, sg(t)) or _old_cb(t, name)
+          if nn._SCAN_DEPTH[0] == 0 else _old_cb(t, name))
       _repfeat = sg(outs['repfeat'])
       _repf = self.feat2tensor(_repfeat)
       _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
@@ -215,8 +211,8 @@ class Agent(embodied.jax.Agent):
       _ = self.con(_repf, 2)
       _ = self.pol(_imgf, 2)
       _ = self.val(_imgf, 2)
-      nn.WSC_OUTPUT_CALLBACK = _old_wsc_cb
-      mets.update(self.wsc.output_metrics(_wsc_outputs))
+      nn.LAYER_CALLBACK = _old_cb
+      mets.update(self.wsc.continual_backprop_step(_cbp_acts))
 
     # Activation-based ReDo: forward-only pass AFTER opt() using the repfeat
     # already computed by the training step.  Being outside nj.grad means
@@ -232,27 +228,36 @@ class Agent(embodied.jax.Agent):
       nn.NORM_CALLBACK = lambda t, name: (
         _acts.__setitem__(name, t) or _old_norm_cb(t, name)
         if nn._SCAN_DEPTH[0] == 0 else _old_norm_cb(t, name))
-      # nn.LAYER_CALLBACK = lambda t, name: _acts.__setitem__(name, t) or _old_cb(t, name)
-      _repfeat = sg(outs['repfeat'])
-      # enc: no internal scan → mlp{i}/cnn{i} activations captured.
-      # _ = self.enc({}, obs, obs['is_first'], training=False)
-      # dyn: _core/_observe run inside nj.scan; their activations are
-      # suppressed by the _SCAN_DEPTH guard and cannot be captured via
-      # side-effects.  _prior (prior projection layers) is scan-free and
-      # can be called directly on the already-computed deter sequence.
-      # _ = self.dyn._prior(nn.cast(_repfeat['deter']))
-      # dec: no internal scan → sp1/conv{i} activations captured.
-      # _ = self.dec({}, _repfeat, obs['is_first'], training=False)
-      # rew/con: use repfeat (same distribution as training).
-      # pol/val: use imgfeat (same distribution as imag_loss training).
-      _repf = self.feat2tensor(_repfeat)
-      _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
-      _ = self.rew(_repf, 2)
-      _ = self.con(_repf, 2)
-      _ = self.pol(_imgf, 2)
-      _ = self.val(_imgf, 2)
-      nn.NORM_CALLBACK = _old_norm_cb
-      nn.LAYER_CALLBACK = _old_cb
+      try:
+        _repfeat = sg(outs['repfeat'])
+        # enc: no internal scan -> mlp{i}/cnn{i} activations captured.
+        _ = self.enc({}, obs, obs['is_first'], training=False)
+        # dyn: _core/_observe run inside nj.scan; their activations are
+        # suppressed by the _SCAN_DEPTH guard and cannot be captured via
+        # side-effects. _prior is scan-free and can be called directly on
+        # the already-computed deter sequence.
+        _flat = lambda x: x.reshape((-1, *x.shape[2:]))
+        _flatfeat = jax.tree.map(_flat, _repfeat)
+        _flatact = self._action_tensor(self._next_actions(prevact))
+        _flatact = _flatact.reshape((-1, _flatact.shape[-1]))
+        _ = self.dyn._core(
+            _flatfeat['deter'], _flatfeat['stoch'], _flatact)
+        _tokens = outs['tokens'].reshape((math.prod(outs['tokens'].shape[:2]), -1))
+        _ = self.dyn.obslogit_from_deter_tokens(_flatfeat['deter'], _tokens)
+        _ = self.dyn._prior(nn.cast(_repfeat['deter']))
+        # dec: no internal scan -> sp1/conv{i} activations captured.
+        _ = self.dec({}, _repfeat, obs['is_first'], training=False)
+        # rew/con: use repfeat (same distribution as training).
+        # pol/val: use imgfeat (same distribution as imag_loss training).
+        _repf = self.feat2tensor(_repfeat)
+        _imgf = sg(self.feat2tensor(outs.get('imgfeat', outs['repfeat'])))
+        _ = self.rew(_repf, 2)
+        _ = self.con(_repf, 2)
+        _ = self.pol(_imgf, 2)
+        _ = self.val(_imgf, 2)
+      finally:
+        nn.NORM_CALLBACK = _old_norm_cb
+        nn.LAYER_CALLBACK = _old_cb
       mets.update(self.act_redo.step(_acts))
 
     metrics.update(mets)
@@ -580,29 +585,22 @@ class Agent(embodied.jax.Agent):
     if run_cfg is not None:
       mechanism = getattr(run_cfg, 'reset_mechanism', mechanism)
       target = getattr(run_cfg, 'reset_target', target)
-    enabled, scale_mode, norm_mode = embodied.jax.wsc.parse_mechanism(
+    enabled, _, _ = embodied.jax.wsc.parse_mechanism(
         mechanism, getattr(wsc_cfg, 'norm_mode', 'init') if wsc_cfg else 'init')
-    return embodied.jax.WSC(
+    return embodied.jax.MechanismController(
         enabled=enabled,
         mechanism=mechanism,
         target=target,
-        norm_mode=norm_mode,
-        target_norm=getattr(wsc_cfg, 'target_norm', 1.0) if wsc_cfg else 1.0,
-        scale_factor=getattr(wsc_cfg, 'scale_factor', 0.999) if wsc_cfg else 0.999,
-        eps=getattr(wsc_cfg, 'eps', 1e-8) if wsc_cfg else 1e-8,
-        factor_min=getattr(wsc_cfg, 'factor_min', 0.01) if wsc_cfg else 0.01,
-        factor_max=getattr(wsc_cfg, 'factor_max', 100.0) if wsc_cfg else 100.0,
-        scale_min=getattr(wsc_cfg, 'scale_min', 1e-4) if wsc_cfg else 1e-4,
-        scale_max=getattr(wsc_cfg, 'scale_max', 1e4) if wsc_cfg else 1e4,
-        nograd_start_step=(
-            getattr(wsc_cfg, 'nograd_start_step', 10000)
-            if wsc_cfg else 10000),
-        scale_adjust_min=(
-            getattr(wsc_cfg, 'scale_adjust_min', 0.1)
-            if wsc_cfg else 0.1),
-        scale_adjust_max=(
-            getattr(wsc_cfg, 'scale_adjust_max', 10.0)
-            if wsc_cfg else 10.0),
+        weight_decay=getattr(wsc_cfg, 'weight_decay', 2e-5) if wsc_cfg else 2e-5,
+        l2_init_weight=(
+            getattr(wsc_cfg, 'l2_init_weight', 2e-5) if wsc_cfg else 2e-5),
+        cbp_eta=getattr(wsc_cfg, 'cbp_eta', 0.99) if wsc_cfg else 0.99,
+        cbp_maturity=(
+            getattr(wsc_cfg, 'cbp_maturity', 5000) if wsc_cfg else 5000),
+        cbp_replacement_rate=(
+            getattr(wsc_cfg, 'cbp_replacement_rate', 1e-4)
+            if wsc_cfg else 1e-4),
+        cbp_eps=getattr(wsc_cfg, 'cbp_eps', 1e-8) if wsc_cfg else 1e-8,
         name='wsc')
 
 

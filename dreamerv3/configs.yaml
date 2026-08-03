@@ -83,24 +83,14 @@ defaults:
     # Periodic model reset for continual runs.
     # reset_frequency is independent from agent.redo.frequency.
     reset_frequency: 0
-    # Active WSC mechanisms:
-    #   WSC_nograd_scale_init
-    #   WSC_grad_scale_init
-    #   WSC_nograd_scale_constant
-    #   WSC_grad_scale_constant
-    #   WSC_nograd_scale_lr
-    #   WSC_grad_scale_lr
-    #   WSC_nograd_scale_factor
-    #   WSC_grad_scale_factor
-    #   wsc_no_scale_init
-    #   wsc_no_scale_constant
-    #   wsc_no_scale_factor
-    #   wsc_skip_last_layer_init
-    #   wsc_skip_last_layer_constant
-    #   wsc_skip_last_layer_factor
-    # Set reset_mechanism to disabled/off/none to disable WSC.
+    # Active target-parameter mechanisms:
+    #   l2_decay
+    #   l2_decay_preupdate
+    #   l2_init
+    #   continual_backprop
+    # Set reset_mechanism to disabled/off/none to disable.
     reset_mechanism: disabled
-    # Reset/WSC targets are defined in embodied/jax/reset_targets.py.
+    # Mechanism targets are defined in embodied/jax/reset_targets.py.
     # Built-ins: all, agent_head, wm_head, dyn, all_head.
     reset_target: all
     # revive_strategy:
@@ -167,25 +157,12 @@ defaults:
     wsc:
       mechanism: disabled
       target: all
-      # init: restore each layer to its initialization Frobenius norm.
-      # constant: restore each layer to target_norm.
-      # lr: multiply each selected layer by 1/(1 + lr * sqrt(param_count)).
-      # factor: multiply each selected layer by the current factor rule.
-      # wsc_no_scale_* modes do not create/train per-layer wsc_scale params.
-      norm_mode: init
-      target_norm: 1.0
-      scale_factor: 0.999
-      eps: 1e-8
-      factor_min: 0.01
-      factor_max: 100.0
-      scale_min: 1e-4
-      scale_max: 1e4
-      # For WSC_nograd_* only: delay WSC rescaling until this many optimizer
-      # updates have completed, while keeping wsc_scale frozen.
-      nograd_start_step: 10000
-      # Clamp the no-grad scale inverse adjustment per update.
-      scale_adjust_min: 0.1
-      scale_adjust_max: 10.0
+      weight_decay: 2e-5
+      l2_init_weight: 2e-5
+      cbp_eta: 0.99
+      cbp_maturity: 5000
+      cbp_replacement_rate: 1e-4
+      cbp_eps: 1e-8
     redo:
       # redo_enabled: run activation-based FGReDo (collects layer activations
       #   during training and resets dormant neurons every `frequency` steps).

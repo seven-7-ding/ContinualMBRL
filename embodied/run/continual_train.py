@@ -96,7 +96,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     raise ValueError(f'revive_epoch must be >= 0, got {revive_epoch}')
   if reset_frequency > 0 and reset_mechanism == 'disabled':
     raise ValueError(
-        'run.reset_frequency > 0 requires an enabled WSC mechanism. '
+        'run.reset_frequency > 0 requires an enabled parameter mechanism. '
         'Set run.reset_frequency=0 to disable reset scheduling.')
   if revive_strategy not in ('fixed', 'threshold'):
     raise ValueError(
@@ -216,6 +216,15 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   carry_train = [agent.init_train(args.batch_size)]
   carry_report = agent.init_report(args.batch_size)
 
+  def add_train_metrics(mets):
+    for key, value in mets.items():
+      if key.startswith('mechanism/cbp/reset_count_since_log/'):
+        train_agg.add(key, value, agg='sum', prefix='train')
+      elif key.startswith('opt/mechanism/l2_init/module_delta_sq/'):
+        train_agg.add(key, value, agg='last', prefix='train')
+      else:
+        train_agg.add(key, value, prefix='train')
+
   def trainfn(tran, worker):
     if len(replay) < args.batch_size * args.batch_length:
       return
@@ -229,7 +238,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       if 'replay' in outs:
         replay.update(outs['replay'])
       update_loss_windows(mets)
-      train_agg.add(mets, prefix='train')
+      add_train_metrics(mets)
 
   def revive(mode, max_steps, label, last_losses):
     if max_steps <= 0:
@@ -261,7 +270,7 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       if 'replay' in outs:
         replay.update(outs['replay'])
       update_loss_windows(mets)
-      train_agg.add(mets, prefix='train')
+      add_train_metrics(mets)
       done += 1
       cur_losses = current_mode_losses(mode, mets)
       if cur_losses:
@@ -301,19 +310,19 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
 
   def periodic_reset():
     print(
-        f'WSC schedule reached at step {step.value}: '
+        f'Mechanism schedule reached at step {step.value}: '
         f'mechanism={reset_mechanism}, target={reset_target}. '
-        'WSC is applied after every optimizer update; no legacy parameter '
-        'reset is executed.')
+        'The selected mechanism is applied during regular optimizer updates; '
+        'no legacy parameter reset is executed.')
     if revive_epoch <= 0:
       return
     if reset_target == 'all':
-      revive('wm', revive_epoch, 'world model WSC revive', get_last_loss('wm'))
+      revive('wm', revive_epoch, 'world model mechanism revive', get_last_loss('wm'))
       revive(
-          'agent', revive_epoch, 'agent WSC revive', get_last_loss('agent'))
+          'agent', revive_epoch, 'agent mechanism revive', get_last_loss('agent'))
     else:
       revive(
-          reset_target, revive_epoch, f'{reset_target} WSC revive',
+          reset_target, revive_epoch, f'{reset_target} mechanism revive',
           get_last_loss(reset_target))
 
   cp = elements.Checkpoint(logdir / 'ckpt')
@@ -415,6 +424,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       for k, v in train_metrics.items():
         if "train/loss/" in k and "opt" not in k:
           loss_metrics[k.replace('train/loss/', '')] = v
+        elif "train/opt/mechanism/l2_init/module_delta_sq/" in k:
+          loss_metrics[k.replace('train/opt/', '')] = v
         elif "train/opt/" in k and "grad_redo" not in k:
           opt_metrics[k.replace('train/opt/', '')] = v
         elif "train/act_redo/" in k:

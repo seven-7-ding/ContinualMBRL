@@ -1,29 +1,62 @@
+"""Target-parameter mechanisms used by continual Dreamer runs.
+
+The file keeps the historical module name because configs and training code
+already route ``run.reset_mechanism`` through ``embodied.jax.wsc``.
+"""
+
 import math
 
+import jax
 import jax.numpy as jnp
 import ninjax as nj
 
 from . import reset_targets
 
 f32 = jnp.float32
+i32 = jnp.int32
 
-LAYER_PARAM_NAMES = frozenset(('kernel', 'bias'))
-SCALE_PARAM_NAME = 'wsc_scale'
+CBP_STATE_NAMES = frozenset(('age', 'f', 'u'))
 
 
 def metric_name(path):
   return path.replace('/', '_')
 
 
-def layer_path(key):
-  parts = key.split('/')
-  if len(parts) < 2 or parts[-1] not in LAYER_PARAM_NAMES:
+def module_name(path):
+  return path.split('/', 1)[0].replace('/', '_')
+
+
+def param_path(key):
+  if key.startswith(('opt/', 'wsc/')):
     return None
-  return '/'.join(parts[:-1])
+  if any(key.endswith(f'/{name}') for name in CBP_STATE_NAMES):
+    return None
+  if '/' not in key:
+    return None
+  return key.rsplit('/', 1)[0]
 
 
-def scale_key(path):
-  return f'{path}/{SCALE_PARAM_NAME}'
+def mechanism_param_items(params, target):
+  target = reset_targets.canonical_target(target)
+  items = {}
+  for key, value in params.items():
+    path = param_path(key)
+    if path is None:
+      continue
+    if not reset_targets.matches_target(path, target):
+      continue
+    if not jnp.issubdtype(value.dtype, jnp.floating):
+      continue
+    items[key] = value
+  return items
+
+
+def layer_path(key):
+  path = param_path(key)
+  if path is None:
+    return None
+  name = key.rsplit('/', 1)[-1]
+  return path if name in ('kernel', 'bias') else None
 
 
 def following_rmsnorm_path(path):
@@ -55,118 +88,105 @@ def following_rmsnorm_path(path):
   return None
 
 
-def has_following_rmsnorm(path, params):
-  norm = following_rmsnorm_path(path)
-  return bool(norm and f'{norm}/scale' in params)
-
-
 def layer_norm(params, path):
   total = jnp.asarray(0, f32)
-  for name in LAYER_PARAM_NAMES:
+  for name in ('kernel', 'bias'):
     key = f'{path}/{name}'
     if key in params:
       total = total + jnp.square(f32(params[key])).sum()
   return jnp.sqrt(total)
 
 
-def layer_param_count(params, path):
-  total = 0
-  for name in LAYER_PARAM_NAMES:
-    key = f'{path}/{name}'
-    if key in params:
-      total += math.prod(params[key].shape)
-  return total
-
-
-def layer_groups(params, target, require_following_rmsnorm=False):
-  groups = {}
-  for key in params:
-    path = layer_path(key)
-    if path is None:
-      continue
-    if not reset_targets.matches_target(path, target):
-      continue
-    if require_following_rmsnorm and not has_following_rmsnorm(path, params):
-      continue
-    groups.setdefault(path, []).append(key)
-  return groups
-
-
-def initial_layer_norms(params, target, eps=1e-8, require_following_rmsnorm=False):
-  norms = {}
-  for path in layer_groups(params, target, require_following_rmsnorm):
-    norm = layer_norm(params, path)
-    norms[path] = jnp.where(
-        norm <= jnp.asarray(eps, f32), jnp.asarray(1.0, f32), norm)
-  return norms
-
-
-def sanitize_init_target_norms(norms, eps=1e-8):
-  eps = jnp.asarray(eps, f32)
-  return {
-      path: jnp.where(
-          f32(norm) <= eps, jnp.asarray(1.0, f32), f32(norm))
-      for path, norm in norms.items()}
-
-
-def output_l2_mean(value):
-  value = f32(value)
-  value = value.reshape((-1, value.shape[-1]))
-  return jnp.linalg.norm(value, axis=-1).mean()
-
-
-def parse_mechanism(mechanism, default_norm_mode='init'):
-  mechanism = str(mechanism or 'disabled')
-  lower = mechanism.lower()
+def parse_mechanism(mechanism, default_norm_mode=None):
+  del default_norm_mode
+  lower = str(mechanism or 'disabled').lower()
   if lower in ('', 'none', 'false', 'disabled', 'off'):
-    return False, 'nograd', default_norm_mode
-  if not lower.startswith('wsc'):
-    raise ValueError(f'Unknown WSC mechanism: {mechanism}')
-  if is_skip_last_layer_mechanism(lower) or 'no_scale' in lower or 'noscale' in lower:
-    scale_mode = 'no_scale'
+    return False, 'disabled', 'disabled'
+  if lower in ('l2_decay', 'l2_decay_preupdate', 'l2_init', 'continual_backprop'):
+    return True, lower, lower
+  raise ValueError(
+      f'Unknown mechanism {mechanism!r}. Supported mechanisms are: '
+      'disabled, l2_decay, l2_decay_preupdate, l2_init, continual_backprop.')
+
+
+def _target_snapshot(params, target):
+  return {
+      key: f32(value)
+      for key, value in mechanism_param_items(params, target).items()}
+
+
+def _tree_sum_squares(tree):
+  if not tree:
+    return jnp.asarray(0, f32)
+  return jnp.stack([
+      jnp.square(f32(value)).sum() for value in tree.values()]).sum()
+
+
+def _fan_in(kernel):
+  if kernel.ndim < 1:
+    return 1
+  return math.prod(kernel.shape[:-1])
+
+
+def _sample_like(key, shape, dtype):
+  std = math.sqrt(1.0 / max(math.prod(shape[:-1]), 1)) / 0.87962566103423978
+  return (jax.random.truncated_normal(key, -2.0, 2.0, shape) * std).astype(dtype)
+
+
+def _feature_axis_sum_abs(kernel, axis):
+  axes = tuple(i for i in range(kernel.ndim) if i != axis)
+  return jnp.abs(f32(kernel)).sum(axis=axes)
+
+
+def _replace_output_axis(value, mask, sample):
+  shape = (1,) * (value.ndim - 1) + mask.shape
+  return jnp.where(mask.reshape(shape), sample, value)
+
+
+def _zero_input_axis(value, mask):
+  if value.ndim == 2:
+    shape = mask.shape + (1,)
   else:
-    scale_mode = 'grad' if 'grad_scale' in lower and 'nograd' not in lower else 'nograd'
-  norm_mode = default_norm_mode
-  if any(x in lower for x in ('lr', 'learning_rate')):
-    norm_mode = 'lr'
-  elif any(x in lower for x in ('factor', 'scale_factor', 'fixed_c')):
-    norm_mode = 'factor'
-  elif any(x in lower for x in ('constant', 'target_norm', 'fixed_norm')):
-    norm_mode = 'constant'
-  elif 'init' in lower:
-    norm_mode = 'init'
-  return True, scale_mode, norm_mode
+    shape = (1,) * (value.ndim - 2) + mask.shape + (1,)
+  return jnp.where(mask.reshape(shape), jnp.zeros_like(value), value)
 
 
-def is_skip_last_layer_mechanism(mechanism):
-  return 'skip_last_layer' in str(mechanism or '').lower()
+def _activation_score(activation):
+  activation = f32(activation)
+  axes = tuple(range(activation.ndim - 1))
+  return jnp.abs(activation).mean(axis=axes)
 
 
-class WSC(nj.Module):
+def _cbp_state_init(params, activations):
+  state = {}
+  for path, act in activations.items():
+    key = f'{path}/kernel'
+    if key not in params:
+      continue
+    size = int(act.shape[-1])
+    state[f'{path}/age'] = jnp.zeros((size,), i32)
+    state[f'{path}/f'] = jnp.zeros((size,), f32)
+    state[f'{path}/u'] = jnp.zeros((size,), f32)
+  return state
+
+
+class MechanismController(nj.Module):
 
   enabled: bool = False
   mechanism: str = 'disabled'
   target: str = 'all'
-  norm_mode: str = 'init'
-  target_norm: float = 1.0
-  scale_factor: float = 0.999
-  eps: float = 1e-8
-  factor_min: float = 0.01
-  factor_max: float = 100.0
-  scale_min: float = 1e-4
-  scale_max: float = 1e4
-  nograd_start_step: int = 10000
-  scale_adjust_min: float = 0.1
-  scale_adjust_max: float = 10.0
+  weight_decay: float = 2e-5
+  l2_init_weight: float = 2e-5
+  cbp_eta: float = 0.99
+  cbp_maturity: int = 5000
+  cbp_replacement_rate: float = 1e-4
+  cbp_eps: float = 1e-8
 
   def __init__(self):
-    enabled, scale_mode, norm_mode = parse_mechanism(
-        self.mechanism, self.norm_mode)
+    enabled, mode, _ = parse_mechanism(self.mechanism)
     self._active = bool(self.enabled or enabled)
-    self._scale_mode = scale_mode
-    self._norm_mode = norm_mode
+    self._mode = mode
     self._target = reset_targets.canonical_target(self.target)
-    self._skip_last_layer = is_skip_last_layer_mechanism(self.mechanism)
 
   @property
   def active(self):
@@ -174,216 +194,223 @@ class WSC(nj.Module):
 
   @property
   def parsed_scale_mode(self):
-    return self._scale_mode
+    return self._mode
 
   @property
   def parsed_norm_mode(self):
-    return self._norm_mode
+    return self._mode
 
   @property
   def parsed_target(self):
     return self._target
 
   @property
-  def skip_last_layer(self):
-    return self._skip_last_layer
-
-  @property
-  def nograd_scale(self):
-    return self.active and self.parsed_scale_mode == 'nograd'
-
-  @property
   def uses_output_scale(self):
-    return self.active and self.parsed_scale_mode in ('grad', 'nograd')
+    return False
 
-  def _all_layer_groups(self, params):
-    return layer_groups(params, self.parsed_target)
-
-  def _controlled_layer_groups(self, params):
-    return layer_groups(
-        params, self.parsed_target,
-        require_following_rmsnorm=self.skip_last_layer)
+  @property
+  def needs_activations(self):
+    return self.active and self._mode == 'continual_backprop'
 
   def zero_scale_grads(self, grads):
-    if not self.active or self.parsed_scale_mode not in ('nograd', 'no_scale'):
-      return grads
-    return {
-        key: jnp.zeros_like(value) if key.endswith('/' + SCALE_PARAM_NAME)
-        else value
-        for key, value in grads.items()}
+    return grads
 
   def init_params(self, params):
     if not self.active:
       return params, {}
-    if self.parsed_norm_mode not in ('constant', 'init'):
-      return params, {}
-    all_groups = self._all_layer_groups(params)
-    if not all_groups:
-      return params, {}
-    groups = self._controlled_layer_groups(params)
-    new_params = dict(params)
-    metrics = {}
-    if self.parsed_norm_mode == 'init':
-      target_tree = self.sub(
-          'target_norms', nj.Tree,
-          lambda params: initial_layer_norms(
-              params, self.parsed_target, self.eps, self.skip_last_layer),
+    metrics = self._target_metrics(params)
+    if self._mode == 'l2_init':
+      refs = self.sub(
+          'init_params', nj.Tree, lambda p: _target_snapshot(p, self._target),
           params)
-      target_norms = sanitize_init_target_norms(target_tree.read(), self.eps)
-      target_tree.write(target_norms)
-    else:
-      target_norms = {}
-    for path, keys in groups.items():
-      norm = layer_norm(new_params, path)
-      if self.parsed_norm_mode == 'constant':
-        target = jnp.asarray(self.target_norm, f32)
-      else:
-        target = f32(target_norms.get(path, norm))
-      factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
-      factor = jnp.where(jnp.isfinite(factor), factor, jnp.asarray(1.0, f32))
-      factor = jnp.clip(
-          factor, jnp.asarray(self.factor_min, f32),
-          jnp.asarray(self.factor_max, f32))
-      for key in keys:
-        new_params[key] = new_params[key] * factor.astype(new_params[key].dtype)
-      lname = metric_name(path)
-      metrics[f'wsc/init_factor/{lname}'] = f32(factor)
-      metrics[f'wsc/init_pre_norm/{lname}'] = f32(norm)
-      metrics[f'wsc/init_target_norm/{lname}'] = f32(target)
-      if self.skip_last_layer:
-        metrics[f'wsc/init_controlled/{lname}'] = jnp.asarray(1.0, f32)
-    if self.skip_last_layer:
-      for path in all_groups:
-        if path in groups:
-          continue
-        lname = metric_name(path)
-        metrics[f'wsc/init_factor/{lname}'] = jnp.asarray(1.0, f32)
-        metrics[f'wsc/init_pre_norm/{lname}'] = f32(layer_norm(new_params, path))
-        metrics[f'wsc/init_target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
-        metrics[f'wsc/init_controlled/{lname}'] = jnp.asarray(0.0, f32)
-    return new_params, metrics
-
-  def step(self, pre_params, post_params, outputs=None, step=None, lr=None):
-    if not self.active:
-      return post_params, {}
-    outputs = outputs or {}
-    all_groups = self._all_layer_groups(post_params)
-    if not all_groups:
-      return post_params, {}
-    groups = self._controlled_layer_groups(post_params)
-    wsc_started = jnp.asarray(True)
-    if self.nograd_scale and step is not None:
-      wsc_started = jnp.asarray(step >= self.nograd_start_step)
-
-    target_tree = None
-    if self.parsed_norm_mode == 'init':
-      target_tree = self.sub(
-          'target_norms', nj.Tree,
-          lambda params: initial_layer_norms(
-              params, self.parsed_target, self.eps, self.skip_last_layer),
-          pre_params)
-      target_norms = sanitize_init_target_norms(target_tree.read(), self.eps)
-      target_tree.write(target_norms)
-    else:
-      target_norms = {}
-
-    params = dict(post_params)
-    metrics = {}
-    for path, keys in groups.items():
-      norm = layer_norm(params, path)
-      if self.parsed_norm_mode == 'factor':
-        lr_value = jnp.asarray(0.0 if lr is None else lr, f32)
-        lr_value = jnp.where(
-            jnp.isfinite(lr_value), lr_value, jnp.asarray(0.0, f32))
-        factor = 1.0 / (1.0 + lr_value)
-        target = jnp.asarray(jnp.nan, f32)
-      elif self.parsed_norm_mode == 'lr':
-        lr_value = jnp.asarray(0.0 if lr is None else lr, f32)
-        lr_value = jnp.where(
-            jnp.isfinite(lr_value), lr_value, jnp.asarray(0.0, f32))
-        count = jnp.asarray(layer_param_count(params, path), f32)
-        factor = 1.0 / (1.0 + lr_value * jnp.sqrt(jnp.maximum(count, 1.0)))
-        target = jnp.asarray(jnp.nan, f32)
-      elif self.parsed_norm_mode == 'constant':
-        target = jnp.asarray(self.target_norm, f32)
-        factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
-      elif self.parsed_norm_mode == 'init':
-        target = f32(target_norms.get(
-            path, jnp.maximum(norm, jnp.asarray(1.0, f32))))
-        factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
-      else:
-        raise ValueError(f'Unknown WSC norm mode: {self.parsed_norm_mode}')
-      factor = jnp.where(jnp.isfinite(factor), factor, jnp.asarray(1.0, f32))
-      factor = jnp.clip(
-          factor, jnp.asarray(self.factor_min, f32),
-          jnp.asarray(self.factor_max, f32))
-      factor = jnp.where(wsc_started, factor, jnp.asarray(1.0, f32))
-
-      for key in keys:
-        params[key] = params[key] * factor.astype(params[key].dtype)
-
-      follows_norm = has_following_rmsnorm(path, params)
-      skey = scale_key(path)
-      if skey in params:
-        if self.parsed_scale_mode == 'no_scale':
-          params[skey] = jnp.ones_like(params[skey])
-        elif self.parsed_scale_mode == 'nograd':
-          scale_adjust = 1 / factor
-          scale_adjust = jnp.where(
-              jnp.isfinite(scale_adjust), scale_adjust, jnp.asarray(1.0, f32))
-          scale_adjust = jnp.clip(
-              scale_adjust, jnp.asarray(self.scale_adjust_min, f32),
-              jnp.asarray(self.scale_adjust_max, f32))
-          scale_adjust = jnp.where(
-              wsc_started, scale_adjust, jnp.asarray(1.0, f32))
-          params[skey] = (
-              params[skey] * scale_adjust.astype(params[skey].dtype))
-          params[skey] = jnp.clip(
-              params[skey], jnp.asarray(self.scale_min, params[skey].dtype),
-              jnp.asarray(self.scale_max, params[skey].dtype))
-        lname = metric_name(path)
-        metrics[f'wsc/scale/{lname}'] = f32(params[skey])
-        if path in outputs:
-          metrics[f'wsc/output_l2_mean/{lname}'] = output_l2_mean(outputs[path])
-      elif self.parsed_scale_mode == 'no_scale':
-        lname = metric_name(path)
-        metrics[f'wsc/scale/{lname}'] = jnp.asarray(1.0, f32)
-      elif not follows_norm:
-        lname = metric_name(path)
-        metrics[f'wsc/missing_scale/{lname}'] = jnp.asarray(1.0, f32)
-
-      lname = metric_name(path)
-      metrics[f'wsc/factor/{lname}'] = f32(factor)
-      metrics[f'wsc/pre_norm/{lname}'] = f32(norm)
-      metrics[f'wsc/target_norm/{lname}'] = f32(target)
-      if self.skip_last_layer:
-        metrics[f'wsc/controlled/{lname}'] = jnp.asarray(1.0, f32)
-      if self.parsed_norm_mode in ('factor', 'lr'):
-        metrics[f'wsc/lr/{lname}'] = f32(lr_value)
-      if self.parsed_norm_mode == 'lr':
-        metrics[f'wsc/lr_param_count/{lname}'] = f32(count)
-
-    if self.skip_last_layer:
-      for path in all_groups:
-        if path in groups:
-          continue
-        lname = metric_name(path)
-        metrics[f'wsc/factor/{lname}'] = jnp.asarray(1.0, f32)
-        metrics[f'wsc/pre_norm/{lname}'] = f32(layer_norm(params, path))
-        metrics[f'wsc/target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
-        metrics[f'wsc/controlled/{lname}'] = jnp.asarray(0.0, f32)
-
-    if self.nograd_scale:
-      metrics['wsc/nograd_started'] = f32(wsc_started)
-
+      refs.write(refs.read())
+      raw = self._l2_init_raw(params, refs.read())
+      metrics['mechanism/l2_init/raw_loss'] = raw
+      metrics['mechanism/l2_init/weighted_loss'] = raw * f32(self.l2_init_weight)
     return params, metrics
 
-  def output_metrics(self, outputs):
-    if not self.active:
+  def regularization_loss(self, params):
+    if not self.active or self._mode != 'l2_init':
+      return jnp.asarray(0, f32)
+    refs = self.sub(
+        'init_params', nj.Tree, lambda p: _target_snapshot(p, self._target),
+        params)
+    raw = self._l2_init_raw(params, refs.read())
+    return raw * f32(self.l2_init_weight)
+
+  def regularization_metrics(self, params):
+    if not self.active or self._mode != 'l2_init':
       return {}
+    refs = self.sub(
+        'init_params', nj.Tree, lambda p: _target_snapshot(p, self._target),
+        params)
+    raw = self._l2_init_raw(params, refs.read())
+    metrics = {
+        'mechanism/l2_init/raw_loss': raw,
+        'mechanism/l2_init/weighted_loss': raw * f32(self.l2_init_weight),
+    }
+    metrics.update(self._l2_init_module_delta_squares(params, refs.read()))
+    return metrics
+
+  def step(self, pre_params, post_params, outputs=None, step=None, lr=None):
+    del pre_params, outputs, step, lr
+    if not self.active or self._mode != 'l2_decay':
+      return post_params, {}
+    params = dict(post_params)
+    factor = jnp.asarray(1.0 - self.weight_decay, f32)
+    count = 0
+    for key, value in mechanism_param_items(params, self._target).items():
+      params[key] = value * factor.astype(value.dtype)
+      count += math.prod(value.shape)
+    metrics = self._target_metrics(params)
+    metrics.update({
+        'mechanism/l2_decay/factor': factor,
+        'mechanism/l2_decay/weight_decay': jnp.asarray(self.weight_decay, f32),
+        'mechanism/l2_decay/param_count': jnp.asarray(count, f32),
+    })
+    return params, metrics
+
+  def preupdate_step(self, pre_params, post_params, outputs=None, step=None, lr=None):
+    del outputs, step, lr
+    if not self.active or self._mode != 'l2_decay_preupdate':
+      return post_params, {}
+    params = dict(post_params)
+    factor = jnp.asarray(1.0 - self.weight_decay, f32)
+    count = 0
+    for key, pre_value in mechanism_param_items(pre_params, self._target).items():
+      update = post_params[key] - pre_value
+      params[key] = pre_value * factor.astype(pre_value.dtype) + update
+      count += math.prod(pre_value.shape)
+    metrics = self._target_metrics(params)
+    metrics.update({
+        'mechanism/l2_decay_preupdate/factor': factor,
+        'mechanism/l2_decay_preupdate/weight_decay': jnp.asarray(
+            self.weight_decay, f32),
+        'mechanism/l2_decay_preupdate/param_count': jnp.asarray(count, f32),
+    })
+    return params, metrics
+
+  def continual_backprop_step(self, activations):
+    if not self.needs_activations or not activations:
+      return {}
+    ctx = nj.context()
+    paths = [
+        path for path in activations
+        if f'{path}/kernel' in ctx
+        and reset_targets.matches_target(path, self._target)]
+    if len(paths) < 2:
+      return {'mechanism/cbp/eligible_layers': jnp.asarray(len(paths), f32)}
+
+    state_tree = self.sub(
+        'cbp_state', nj.Tree, _cbp_state_init, ctx, activations)
+    state = dict(state_tree.read())
+    metrics = {'mechanism/cbp/eligible_layers': jnp.asarray(len(paths), f32)}
+    eta = jnp.asarray(self.cbp_eta, f32)
+    eps = jnp.asarray(self.cbp_eps, f32)
+
+    for current, next_path in zip(paths[:-1], paths[1:]):
+      cur_key = f'{current}/kernel'
+      next_key = f'{next_path}/kernel'
+      if cur_key not in ctx or next_key not in ctx:
+        continue
+      cur_kernel, next_kernel = ctx[cur_key], ctx[next_key]
+      if cur_kernel.ndim not in (2, 4) or next_kernel.ndim not in (2, 4):
+        continue
+      if cur_kernel.shape[-1] != activations[current].shape[-1]:
+        continue
+      if next_kernel.ndim == 2 and next_kernel.shape[0] != cur_kernel.shape[-1]:
+        continue
+      if next_kernel.ndim == 4 and next_kernel.shape[-2] != cur_kernel.shape[-1]:
+        continue
+
+      size = int(cur_kernel.shape[-1])
+      age_key, f_key, u_key = (
+          f'{current}/age', f'{current}/f', f'{current}/u')
+      if age_key not in state or state[age_key].shape[0] != size:
+        state[age_key] = jnp.zeros((size,), i32)
+        state[f_key] = jnp.zeros((size,), f32)
+        state[u_key] = jnp.zeros((size,), f32)
+
+      age = state[age_key] + 1
+      h = _activation_score(activations[current])
+      f_old = state[f_key]
+      f_hat = f_old / (1 - jnp.power(eta, age.astype(f32)) + eps)
+      f_new = eta * f_old + (1 - eta) * h
+      pre_w = _feature_axis_sum_abs(cur_kernel, cur_kernel.ndim - 1) + eps
+      post_axis = 0 if next_kernel.ndim == 2 else next_kernel.ndim - 2
+      post_w = _feature_axis_sum_abs(next_kernel, post_axis)
+      y = jnp.abs(h - f_hat) * post_w / pre_w
+      u_new = eta * state[u_key] + (1 - eta) * y
+      u_hat = u_new / (1 - jnp.power(eta, age.astype(f32)) + eps)
+      eligible = age > self.cbp_maturity
+      replace_prob = jnp.minimum(
+          1.0, jnp.asarray(size * self.cbp_replacement_rate, f32))
+      should_replace = (
+          eligible.any() &
+          (jax.random.uniform(nj.seed(), ()) < replace_prob))
+      masked_utility = jnp.where(eligible, u_hat, jnp.inf)
+      replace_index = jnp.argmin(masked_utility)
+      mask = jnp.arange(size) == replace_index
+      reset_mask = should_replace & mask
+
+      sample = _sample_like(nj.seed(), cur_kernel.shape, cur_kernel.dtype)
+      ctx[cur_key] = _replace_output_axis(cur_kernel, reset_mask, sample)
+      if f'{current}/bias' in ctx:
+        bias = ctx[f'{current}/bias']
+        ctx[f'{current}/bias'] = jnp.where(reset_mask, jnp.zeros_like(bias), bias)
+      ctx[next_key] = _zero_input_axis(next_kernel, reset_mask)
+      state[age_key] = jnp.where(reset_mask, jnp.zeros_like(age), age)
+      state[f_key] = jnp.where(reset_mask, jnp.zeros_like(f_new), f_new)
+      state[u_key] = jnp.where(reset_mask, jnp.zeros_like(u_new), u_new)
+
+      lname = metric_name(current)
+      metrics[f'mechanism/cbp/replaced/{lname}'] = f32(should_replace)
+      metrics[f'mechanism/cbp/reset_count_since_log/{lname}'] = (
+          f32(reset_mask).sum())
+      metrics[f'mechanism/cbp/min_utility/{lname}'] = jnp.min(masked_utility)
+      metrics[f'mechanism/cbp/eligible/{lname}'] = f32(eligible).mean()
+      metrics[f'mechanism/cbp/mean_age/{lname}'] = f32(age).mean()
+
+    state_tree.write(state)
+    return metrics
+
+  def output_metrics(self, outputs):
+    del outputs
+    return {}
+
+  def _l2_init_raw(self, params, refs):
+    total = jnp.asarray(0, f32)
+    for key, init_value in refs.items():
+      if key not in params:
+        continue
+      diff = f32(params[key]) - f32(init_value)
+      total = total + 0.5 * jnp.square(diff).sum()
+    return total
+
+  def _l2_init_module_delta_squares(self, params, refs):
+    metrics = {}
+    for key, init_value in refs.items():
+      if key not in params:
+        continue
+      path = param_path(key)
+      if path is None:
+        continue
+      name = module_name(path)
+      metric = f'mechanism/l2_init/module_delta_sq/{name}'
+      diff = f32(params[key]) - f32(init_value)
+      metrics[metric] = metrics.get(metric, jnp.asarray(0, f32)) + (
+          jnp.square(diff).sum())
+    return metrics
+
+  def _target_metrics(self, params):
+    items = mechanism_param_items(params, self._target)
+    count = sum(math.prod(value.shape) for value in items.values())
+    norm = jnp.sqrt(_tree_sum_squares(items))
     return {
-        f'wsc/output_l2_mean/{metric_name(path)}': output_l2_mean(value)
-        for path, value in outputs.items()}
+        'mechanism/active': jnp.asarray(float(self.active), f32),
+        'mechanism/target_param_count': jnp.asarray(count, f32),
+        'mechanism/target_param_l2': norm,
+    }
 
 
 def layer_grad_metrics(grads, updates):
@@ -398,3 +425,7 @@ def layer_grad_metrics(grads, updates):
     if key in updates:
       metrics[f'update_mean/{lname}/{pname}'] = jnp.abs(f32(updates[key])).mean()
   return metrics
+
+
+# Backward-compatible name for existing imports and checkpoint scopes.
+WSC = MechanismController

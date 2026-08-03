@@ -41,6 +41,8 @@ class Optimizer(nj.Module):
       loss, aux = outs if has_aux else (outs, None)
       assert loss.dtype == f32, (self.name, loss.dtype)
       assert loss.shape == (), (self.name, loss.shape)
+      if wsc_controller is not None:
+        loss = loss + wsc_controller.regularization_loss(nj.context())
       if self.scaling:
         loss *= sg(self.grad_scale.read())
       return loss, aux
@@ -59,6 +61,8 @@ class Optimizer(nj.Module):
       if init_wsc_metrics:
         nj.context().update(params)
         metrics.update(init_wsc_metrics)
+    if wsc_controller is not None:
+      metrics.update(wsc_controller.regularization_metrics(params))
 
     axes = internal.get_data_axes()
     if axes:
@@ -85,6 +89,9 @@ class Optimizer(nj.Module):
       current_lr = None
       if self.lr_schedule is not None:
         current_lr = self.lr_schedule(self.step.read())
+      new_params, wsc_metrics = wsc_controller.preupdate_step(
+          params, new_params, wsc_outputs, self.step.read(), current_lr)
+      metrics.update(wsc_metrics)
       new_params, wsc_metrics = wsc_controller.step(
           params, new_params, wsc_outputs, self.step.read(), current_lr)
       metrics.update(wsc_metrics)
