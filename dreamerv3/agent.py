@@ -23,6 +23,40 @@ concat = lambda xs, a: jax.tree.map(lambda *x: jnp.concatenate(x, a), *xs)
 isimage = lambda s: s.dtype == np.uint8 and len(s.shape) == 3
 
 
+def _normalize_data_augmentation_mode(mode):
+  mode = str(mode or 'disabled').lower()
+  aliases = {
+      'none': 'disabled',
+      'off': 'disabled',
+      'false': 'disabled',
+      'data_augmentation_batch_align': 'batch_align',
+      'data_augmentation_batch_aug': 'batch_aug',
+  }
+  mode = aliases.get(mode, mode)
+  if mode not in ('disabled', 'batch_align', 'batch_aug'):
+    raise ValueError(
+        f'Unknown data_augmentation mode {mode!r}. Supported modes are '
+        'disabled, batch_align, and batch_aug.')
+  return mode
+
+
+def _random_shift_images(images, shifts, pad):
+  if not pad:
+    return images
+  assert images.ndim == 5, images.shape
+  B, T, H, W, C = images.shape
+  flat = images.reshape((B * T, H, W, C))
+  shifts = shifts.reshape((B * T, 2)).astype(jnp.int32)
+  padded = jnp.pad(
+      flat, ((0, 0), (pad, pad), (pad, pad), (0, 0)), mode='edge')
+
+  def crop(image, shift):
+    return jax.lax.dynamic_slice(image, (shift[0], shift[1], 0), (H, W, C))
+
+  shifted = jax.vmap(crop)(padded, shifts)
+  return shifted.reshape((B, T, H, W, C))
+
+
 class Agent(embodied.jax.Agent):
 
   banner = [
@@ -36,6 +70,10 @@ class Agent(embodied.jax.Agent):
     self.obs_space = obs_space
     self.act_space = act_space
     self.config = config
+    data_aug_cfg = getattr(config, 'data_augmentation', None)
+    self.data_aug_mode = _normalize_data_augmentation_mode(
+        getattr(data_aug_cfg, 'mode', 'disabled') if data_aug_cfg else 'disabled')
+    self.data_aug_pad = int(getattr(data_aug_cfg, 'pad', 4) if data_aug_cfg else 4)
 
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
@@ -91,6 +129,7 @@ class Agent(embodied.jax.Agent):
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
     self.scales = scales
+    self.image_obs_keys = [k for k, v in self.obs_space.items() if isimage(v)]
 
     # ReDo plasticity analysers (created only when enabled in config).
     redo_cfg = getattr(config, 'redo', None)
@@ -280,11 +319,20 @@ class Agent(embodied.jax.Agent):
     return carry, outs, metrics
 
   def loss(self, carry, obs, prevact, training):
+    data_aug_mode = self.data_aug_mode if training else 'disabled'
+    raw_obs = obs
+    if data_aug_mode != 'disabled':
+      obs = self._augment_obs(raw_obs, sequence_aligned=True)
     enc_carry, dyn_carry, dec_carry = carry
     reset = obs['is_first']
     B, T = reset.shape
     losses = {}
     metrics = {}
+    if data_aug_mode != 'disabled':
+      metrics['data_augmentation/active'] = f32(1.0)
+      metrics['data_augmentation/batch_align'] = f32(1.0)
+      metrics['data_augmentation/batch_aug'] = f32(data_aug_mode == 'batch_aug')
+      metrics['data_augmentation/pad'] = f32(self.data_aug_pad)
 
     # World model
     enc_carry, enc_entries, tokens = self.enc(
@@ -314,11 +362,24 @@ class Agent(embodied.jax.Agent):
     # Imagination
     K = min(self.config.imag_last or T, T)
     H = self.config.imag_length
-    starts = self.dyn.starts(dyn_entries, dyn_carry, K)
+    if data_aug_mode == 'batch_aug':
+      img_carry = carry
+      img_obs = self._augment_obs(raw_obs, sequence_aligned=False)
+      img_enc_carry, img_dyn_carry, _ = img_carry
+      _, _, img_tokens = self.enc(
+          img_enc_carry, img_obs, reset, training)
+      img_dyn_carry, img_dyn_entries, _, img_repfeat, _ = self.dyn.loss(
+          img_dyn_carry, img_tokens, prevact, reset, training)
+      starts_entries, starts_carry, starts_repfeat = (
+          img_dyn_entries, img_dyn_carry, img_repfeat)
+    else:
+      starts_entries, starts_carry, starts_repfeat = (
+          dyn_entries, dyn_carry, repfeat)
+    starts = self.dyn.starts(starts_entries, starts_carry, K)
     policyfn = lambda feat: sample(self.pol(self.feat2tensor(feat), 1))
     _, imgfeat, imgprevact = self.dyn.imagine(starts, policyfn, H, training)
     first = jax.tree.map(
-        lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), repfeat)
+        lambda x: x[:, -K:].reshape((B * K, 1, *x.shape[2:])), starts_repfeat)
     imgfeat = concat([sg(first, skip=self.config.ac_grads), sg(imgfeat)], 1)
     lastact = policyfn(jax.tree.map(lambda x: x[:, -1], imgfeat))
     lastact = jax.tree.map(lambda x: x[:, None], lastact)
@@ -376,6 +437,24 @@ class Agent(embodied.jax.Agent):
   def _next_actions(self, prevact):
     return jax.tree.map(
         lambda x: jnp.concatenate([x[:, 1:], x[:, -1:]], 1), prevact)
+
+  def _augmentation_shifts(self, bshape, sequence_aligned):
+    B, T = bshape
+    pad = self.data_aug_pad
+    if sequence_aligned:
+      shifts = jax.random.randint(nj.seed(), (B, 1, 2), 0, 2 * pad + 1)
+      return jnp.repeat(shifts, T, axis=1)
+    return jax.random.randint(nj.seed(), (B, T, 2), 0, 2 * pad + 1)
+
+  def _augment_obs(self, obs, sequence_aligned):
+    if not self.image_obs_keys or not self.data_aug_pad:
+      return obs
+    key0 = self.image_obs_keys[0]
+    shifts = self._augmentation_shifts(obs[key0].shape[:2], sequence_aligned)
+    obs = dict(obs)
+    for key in self.image_obs_keys:
+      obs[key] = _random_shift_images(obs[key], shifts, self.data_aug_pad)
+    return obs
 
   def _matrix(self, x):
     return sg(f32(x)).reshape((-1, x.shape[-1]))

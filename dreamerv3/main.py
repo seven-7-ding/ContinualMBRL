@@ -226,11 +226,14 @@ def make_logger(config):
       name = items[2]
       wandb_dir = logdir + '/wandb'
       os.makedirs(wandb_dir, exist_ok=True)
+      import wandb
       wandb_kwargs = dict(
           name=name,
           project=project,
           group=group,
-          dir=wandb_dir)
+          dir=wandb_dir,
+          settings=wandb.Settings(
+              init_timeout=float(os.environ.get('WANDB_INIT_TIMEOUT', 1800))))
       if os.environ.get('WANDB_RUN_ID'):
         wandb_kwargs['id'] = os.environ['WANDB_RUN_ID']
       if os.environ.get('WANDB_RESUME'):
