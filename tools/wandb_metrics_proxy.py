@@ -34,7 +34,11 @@ def main():
     parser.add_argument("--project")
     parser.add_argument("--seed")
     parser.add_argument("--run-id")
+    parser.add_argument("--group", default=GROUP)
+    parser.add_argument("--logdir")
     parser.add_argument("--flush-step", action="store_true")
+    parser.add_argument("--min-step", type=int, default=None)
+    parser.add_argument("--heartbeat-interval", type=float, default=0.0)
     args = parser.parse_args()
 
     base = pathlib.Path(args.base)
@@ -45,13 +49,13 @@ def main():
         run_specs = [(args.project, args.seed, args.run_id)]
     states = []
     for project, seed, run_id in run_specs:
-        logdir = base / project / GROUP / seed
+        logdir = pathlib.Path(args.logdir) if args.logdir else base / project / args.group / seed
         proxy_dir = logdir / "wandb_proxy"
         proxy_dir.mkdir(exist_ok=True)
         run = wandb.init(
             entity=ENTITY,
             project=project,
-            group=GROUP,
+            group=args.group,
             name=seed,
             id=run_id,
             resume="allow",
@@ -65,6 +69,8 @@ def main():
             "path": logdir / "metrics.jsonl",
             "pos": 0,
             "seen": set(),
+            "min_step": args.min_step,
+            "last_heartbeat": 0.0,
             "run": run,
         })
         print("initialized", project, seed, run_id, flush=True)
@@ -84,6 +90,8 @@ def main():
                         continue
                     row = json.loads(line)
                     step = int(row.get("step", 0))
+                    if state["min_step"] is not None and step <= state["min_step"]:
+                        continue
                     if step in state["seen"]:
                         continue
                     metrics = {key: clean(value) for key, value in row.items() if key != "step"}
@@ -104,6 +112,11 @@ def main():
                         len(metrics),
                         flush=True,
                     )
+                now = time.time()
+                if args.heartbeat_interval > 0 and now - state["last_heartbeat"] >= args.heartbeat_interval:
+                    state["run"].summary.update({"proxy/heartbeat": now})
+                    state["last_heartbeat"] = now
+                    print("heartbeat", state["project"], state["seed"], now, flush=True)
             except Exception:
                 print("ERROR", state.get("project"), state.get("seed"), flush=True)
                 traceback.print_exc()

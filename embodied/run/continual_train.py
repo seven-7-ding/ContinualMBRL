@@ -188,7 +188,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     for key, value in tran.items():
       if value.dtype == np.uint8 and value.ndim == 3:
         if worker == 0:
-          episode.add(f'policy_{key}', value, agg='stack')
+          if getattr(args, 'log_policy_video', True):
+            episode.add(f'policy_{key}', value, agg='stack')
       elif key.startswith('log/'):
         assert value.ndim == 0, (key, value.shape, value.dtype)
         episode.add(key + '/avg', value, agg='avg')

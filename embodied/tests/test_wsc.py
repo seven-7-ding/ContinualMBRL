@@ -35,6 +35,34 @@ def test_skip_last_layer_constant_controls_only_rmsnorm_followed_layers():
   assert 'wsc/scale/enc_head' not in metrics
 
 
+def test_skip_last_layer_dout_uses_sqrt_output_dim_over_8():
+  params = {
+      'enc/mlp0/kernel': jnp.ones((3, 4), jnp.float32),
+      'enc/mlp0/bias': jnp.ones((4,), jnp.float32),
+      'enc/mlp0norm/scale': jnp.ones((4,), jnp.float32),
+      'enc/head/kernel': jnp.ones((3, 5), jnp.float32),
+      'enc/head/bias': jnp.ones((5,), jnp.float32),
+  }
+  controller = wsc.WSC(
+      enabled=True,
+      mechanism='wsc_skip_last_layer_dout',
+      target='all',
+      name='wsc')
+
+  new_params, metrics = controller.step(params, params)
+
+  assert controller.parsed_scale_mode == 'no_scale'
+  assert controller.parsed_norm_mode == 'dout'
+  assert jnp.allclose(wsc.dout_target_norm(params, 'enc/mlp0'), 0.25)
+  assert jnp.allclose(wsc.layer_norm(new_params, 'enc/mlp0'), 0.25)
+  assert jnp.allclose(
+      wsc.layer_norm(new_params, 'enc/head'),
+      wsc.layer_norm(params, 'enc/head'))
+  assert metrics['wsc/controlled/enc_mlp0'] == 1.0
+  assert metrics['wsc/controlled/enc_head'] == 0.0
+  assert jnp.allclose(metrics['wsc/target_norm/enc_mlp0'], 0.25)
+
+
 def test_regular_constant_still_controls_target_layers_without_rmsnorm():
   params = {
       'enc/head/kernel': jnp.ones((2, 2), jnp.float32) * 2,

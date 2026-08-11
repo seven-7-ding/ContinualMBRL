@@ -79,6 +79,21 @@ def layer_param_count(params, path):
   return total
 
 
+def layer_output_dim(params, path):
+  bias_key = f'{path}/bias'
+  if bias_key in params and params[bias_key].shape:
+    return math.prod(params[bias_key].shape)
+  kernel_key = f'{path}/kernel'
+  if kernel_key in params and params[kernel_key].shape:
+    return params[kernel_key].shape[-1]
+  return 1
+
+
+def dout_target_norm(params, path):
+  dout = jnp.asarray(layer_output_dim(params, path), f32)
+  return jnp.sqrt(jnp.maximum(dout, jnp.asarray(1.0, f32))) / 8.0
+
+
 def layer_groups(params, target, require_following_rmsnorm=False):
   groups = {}
   for key in params:
@@ -152,6 +167,8 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
     norm_mode = 'lr'
   elif any(x in lower for x in ('factor', 'scale_factor', 'fixed_c')):
     norm_mode = 'factor'
+  elif 'dout' in lower:
+    norm_mode = 'dout'
   elif any(x in lower for x in ('constant', 'target_norm', 'fixed_norm')):
     norm_mode = 'constant'
   elif 'init' in lower:
@@ -297,7 +314,7 @@ class WSC(nj.Module):
           self.parsed_last_l2_init_weight_decay, f32)
       metrics['wsc/last_l2_init_layer_count'] = jnp.asarray(
           len(l2_init_groups), f32)
-    if self.parsed_norm_mode not in ('constant', 'init'):
+    if self.parsed_norm_mode not in ('constant', 'init', 'dout'):
       return new_params, metrics
     if self.parsed_norm_mode == 'init':
       target_tree = self.sub(
@@ -313,6 +330,8 @@ class WSC(nj.Module):
       norm = layer_norm(new_params, path)
       if self.parsed_norm_mode == 'constant':
         target = jnp.asarray(self.target_norm, f32)
+      elif self.parsed_norm_mode == 'dout':
+        target = dout_target_norm(new_params, path)
       else:
         target = f32(target_norms.get(path, norm))
       factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
@@ -416,6 +435,9 @@ class WSC(nj.Module):
         target = jnp.asarray(jnp.nan, f32)
       elif self.parsed_norm_mode == 'constant':
         target = jnp.asarray(self.target_norm, f32)
+        factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
+      elif self.parsed_norm_mode == 'dout':
+        target = dout_target_norm(params, path)
         factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
       elif self.parsed_norm_mode == 'init':
         target = f32(target_norms.get(
