@@ -99,7 +99,7 @@ def load_jobs():
       if "command" not in job:
         raise KeyError(f"Missing command in {state}: {job}")
       if job.get("kind") == "crafter":
-        job["command"] = _replace_flag(job["command"], "--run.train_ratio", "0.5")
+        job["command"] = _replace_flag(job["command"], "--run.train_ratio", "512")
       jobs.append(job)
   return jobs
 

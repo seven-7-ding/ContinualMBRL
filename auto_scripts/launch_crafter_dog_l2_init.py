@@ -71,7 +71,7 @@ def command(kind, seed, logdir, gpu):
         str(PYTHON), "dreamerv3/main.py",
         "--configs", "crafter", "size1m",
         "--run.steps", "100000000",
-        "--run.train_ratio", "0.5",
+        "--run.train_ratio", "512",
         "--run.task_interval", "100000000",
         "--run.log_every", "10000",
         "--run.report_every", "20000",

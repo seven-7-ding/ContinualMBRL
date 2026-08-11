@@ -24,3 +24,9 @@
 - The mistaken replacement runs under local group `l2_decay_2e-5` were stopped (`595956`/`595957`/`595958`), their W&B run ids ending in `preupdate-v1` were deleted, and the wrong local folder was removed.
 - Correct replacement runs were launched with `auto_scripts/launch_l2_decay_preupdate_replacement.py` under `logdir/continual_dreamer_soft_reset_size1m/l2_decay_preupdate_2e-5/seed_{1000,2000,3000}`.
 - Correct launched PIDs: seeds 1000/2000/3000 -> `600498`/`600499`/`600500` on GPUs 5/4/0. W&B project is `continual_dreamer_soft_reset_size1m`, group is `l2_decay_preupdate_2e-5`, run ids end in `groupfix-v1`.
+
+## 2026-08-07 Crafter Data Augmentation Runs
+
+- Data augmentation baselines are configured by `agent.data_augmentation.mode` with values `disabled`, `batch_align`, and `batch_aug`; aliases `data_augmentation_batch_align` and `data_augmentation_batch_aug` are accepted.
+- The augmentation is a DrQ-v2-style random shift with replicate padding `pad=4`, applied only when `Agent.loss(..., training=True)` runs. Policy inference and report/eval paths keep raw observations.
+- Formal Crafter runs should live under `logdir/continual_dreamer_soft_reset_crafter_size1m/data_augmentation_batch_{align,aug}/seed_{1000,2000,3000}` so W&B uses the existing Crafter project and the mechanism group names.
