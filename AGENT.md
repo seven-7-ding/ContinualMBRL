@@ -30,3 +30,24 @@
 - Data augmentation baselines are configured by `agent.data_augmentation.mode` with values `disabled`, `batch_align`, and `batch_aug`; aliases `data_augmentation_batch_align` and `data_augmentation_batch_aug` are accepted.
 - The augmentation is a DrQ-v2-style random shift with replicate padding `pad=4`, applied only when `Agent.loss(..., training=True)` runs. Policy inference and report/eval paths keep raw observations.
 - Formal Crafter runs should live under `logdir/continual_dreamer_soft_reset_crafter_size1m/data_augmentation_batch_{align,aug}/seed_{1000,2000,3000}` so W&B uses the existing Crafter project and the mechanism group names.
+
+## 2026-08-13 DMC Vision L2-Init 2e-4 Runs
+
+- Deployed the baseline vision sweep under `logdir/continual_dreamer_soft_reset_walker_run|hopper_hop|fish_swim_vision_size12m_1m_x5/l2_init_2e-4/seed_{1000,2000,3000}` using `dmc_vision continual_dmc_vision size12m`, task `walker_run|hopper_hop|fish_swim`, `agent.data_augmentation.mode=batch_align`, `agent.data_augmentation.pad=4`, and `l2_init` mechanism/weight `2e-4`.
+- Active main PIDs at validation: seed 1000 -> `3883359` on `--egl_device 5`, seed 2000 -> `3868633` on `--egl_device 1`, seed 3000 -> `3868637` on `--egl_device 7`.
+- Validation completed at 2026-08-13 23:44 HKT with valid `metrics.jsonl` logging counts seed 1000 `5/5` at step 50000, seed 2000 `6/5` at step 60000, and seed 3000 `5/5` at step 50000; all three main processes were still alive.
+- Seed 1000 hit transient JAX compile `ptxas exited with non-zero error code 139` on earlier attempts; the stable run was launched via `setsid` and compiled successfully before entering the training loop.
+
+## 2026-08-16 DMC Vision Pause
+
+- User requested stopping all live tasks for W&B project `continual_dreamer_soft_reset_walker_run|hopper_hop|fish_swim_vision_size12m_1m_x5` and freeing CPU/CUDA.
+- Cross-repo backup/resume bundle is `/home/jiale/MBRL/vision_project_pause_backup_20260816T165045_HKT`; it records 12 main Dreamer training PIDs, 9 `wandb_metrics_proxy.py` PIDs, 45 descendants, log tails, process snapshots, and restart scripts.
+- All 66 target PIDs exited after SIGTERM. Verification found no exact-project process alive and no target PID in `nvidia-smi`; unrelated size1m tasks were left running.
+
+## 2026-08-16 Walker/Hopper/Cheetah Vision Size1m
+
+- Foreground supervisor is running from the WSC repo at `/home/jiale/MBRL/ContinualMBRL-wsc/tools/launch_walker_hopper_cheetah_size1m_supervisor.py`.
+- New project: `continual_dreamer_soft_reset_walker_run|hopper_hop|cheetah_run_vision_size1m_1m_x5`; baseline-owned groups are `no_wsc`, `l2_init_2e-4`, and `data_augmentation_batch_align`, each with seeds `1000/2000/3000`.
+- Settings mirror the prior DMC vision run except `size1m` and task `walker_run|hopper_hop|cheetah_run`: `task_interval=1000000`, `task_repeat=5`, `steps=15000000`, train ratio `256`, data augmentation `batch_align` where applicable, l2-init weight `2e-4`, and activation/gradient logging `log+erank+srank`.
+- The first baseline launch attempt failed because this repo does not define `--run.log_policy_video`; the supervisor was patched to omit that flag and the baseline jobs were relaunched to initialization/compile. Supervisor state is in `/home/jiale/MBRL/ContinualMBRL-wsc/logdir/continual_dreamer_soft_reset_walker_run|hopper_hop|cheetah_run_vision_size1m_1m_x5/_supervisor/state.json`.
+- 2026-08-16 17:36 HKT: all 9 baseline-owned jobs wrote valid `metrics.jsonl` rows at step `10000` while the foreground supervisor remained active. Data augmentation rows had `592` keys, no_wsc rows `588`, and l2_init rows `764`; FPS was roughly `15.49-26.04` across all 12 jobs.
