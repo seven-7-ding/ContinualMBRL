@@ -26,6 +26,7 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 
+import json
 import tqdm
 import wandb
 import numpy as np
@@ -76,6 +77,73 @@ config_flags.DEFINE_config_file(
 )
 
 
+def _load_dotenv(path=".env"):
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'").strip('"')
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+def _stats(x, prefix):
+    x = np.asarray(x, dtype=np.float32)
+    return {
+        f'{prefix}_mean': float(x.mean()),
+        f'{prefix}_std': float(x.std()),
+        f'{prefix}_min': float(x.min()),
+        f'{prefix}_max': float(x.max()),
+    }
+
+
+def _as_plain(value):
+    if hasattr(value, "to_dict"):
+        return _as_plain(value.to_dict())
+    if isinstance(value, dict):
+        return {str(k): _as_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_as_plain(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _write_run_config(save_dir, config, flags_obj):
+    payload = {
+        "config": _as_plain(config),
+        "flags": _as_plain(flags_obj.flag_values_dict()),
+    }
+    path = os.path.join(save_dir, "config.yaml")
+    try:
+        import yaml
+        with open(path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(payload, handle, sort_keys=True)
+    except Exception:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("# YAML fallback: JSON is valid YAML 1.2\n")
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+
+
+def _finite_scalar(value):
+    try:
+        value = float(np.asarray(value))
+    except Exception:
+        return None
+    return value if np.isfinite(value) else None
+
+
 # ---------------------------------------------------------------------------
 # Environment factories
 # ---------------------------------------------------------------------------
@@ -117,11 +185,13 @@ def make_eval_env(task_name, obs_dim, act_dim, seed):
 # ---------------------------------------------------------------------------
 
 def main(_):
+    _load_dotenv()
     kwargs = dict(FLAGS.config)
     kwargs.pop("jax_mem_fraction", None)
     redo_cfg = dict(kwargs.pop("redo", {}))
     redo_cfg["frequency"] = redo_cfg["frequency"] * FLAGS.utd
     opt_cfg = dict(kwargs.pop("opt", {}))
+    wsc_cfg = dict(kwargs.pop("wsc", {}))
     kwargs.setdefault("model_size", None)
 
     num_envs  = FLAGS.num_envs
@@ -131,6 +201,7 @@ def main(_):
     total_steps = FLAGS.task_steps * len(task_schedule)
 
     os.makedirs(FLAGS.save_dir, exist_ok=True)
+    _write_run_config(FLAGS.save_dir, FLAGS.config, FLAGS)
     project, group, run = FLAGS.save_dir.split('/')[-3:]
     if FLAGS.wandb:
         wandb.init(project=project, group=group, name=run,
@@ -152,6 +223,7 @@ def main(_):
         single_obs_space,
         single_act_space,
         redo=redo_cfg,
+        wsc=wsc_cfg,
         vd_mode=FLAGS.vd_mode,
         opt=opt_cfg,
         **kwargs,
@@ -169,6 +241,10 @@ def main(_):
         w.unwrapped._load_task(task_schedule[0])
 
     obs = vec_env.reset()   # [num_envs, obs_dim]
+    episode_rewards = [[] for _ in range(num_envs)]
+    completed_scores = []
+    completed_lengths = []
+    completed_reward_stats = []
 
     # global_step counts *individual* transitions (not vec-steps).
     global_step = 0
@@ -227,6 +303,7 @@ def main(_):
                         per_env_infos[_j][_key] = _values[_j]
 
         for i in range(num_envs):
+            episode_rewards[i].append(float(rewards[i]))
             # gym.vector sets 'TimeLimit.truncated' only when a true timeout
             # (not a terminal done) fires.  The final_observation key holds
             # the real last obs before auto-reset.
@@ -249,6 +326,13 @@ def main(_):
                 dones=bool(dones[i]),
                 next_observations=terminal_obs,
             ))
+            if dones[i]:
+                rew = np.asarray(episode_rewards[i], dtype=np.float32)
+                if rew.size:
+                    completed_scores.append(float(rew.sum()))
+                    completed_lengths.append(float(rew.size))
+                    completed_reward_stats.append(_stats(rew, "real_reward"))
+                episode_rewards[i] = []
 
         obs = next_obs
         global_step += num_envs
@@ -265,9 +349,23 @@ def main(_):
                     step_info = agent.update(batch)
                     update_info.update(step_info)
 
-            has_redo = any('redo' in k for k in update_info)
+            has_redo = any(
+                ('redo' in k and _finite_scalar(v) is not None)
+                for k, v in update_info.items())
             if FLAGS.wandb and (global_step % FLAGS.log_interval < num_envs or has_redo):
                 log_dict = {}
+                if completed_scores:
+                    log_dict['episode/score'] = float(np.mean(completed_scores))
+                    log_dict['episode/length'] = float(np.mean(completed_lengths))
+                    epstats = {}
+                    for item in completed_reward_stats:
+                        for key, value in item.items():
+                            epstats.setdefault(key, []).append(value)
+                    for key, values in epstats.items():
+                        log_dict[f'epstats/{key}'] = float(np.mean(values))
+                    completed_scores.clear()
+                    completed_lengths.clear()
+                    completed_reward_stats.clear()
                 _LOSS_REMAP = {
                     'actor_loss':       'loss/policy',
                     'critic_loss':      'loss/value',
@@ -279,49 +377,23 @@ def main(_):
                     'q':           'train/q_mean',
                 }
                 for k, v in update_info.items():
+                    scalar = _finite_scalar(v)
+                    if scalar is None:
+                        continue
                     if k in _LOSS_REMAP:
-                        log_dict[_LOSS_REMAP[k]] = v
+                        log_dict[_LOSS_REMAP[k]] = scalar
                     elif k in _TRAIN_REMAP:
-                        log_dict[_TRAIN_REMAP[k]] = v
-                    elif '/redo/' in k:
-                        # Convert to dreamer naming: act_redo/{rank_type}/{net_prefix}_linear{i}
-                        # e.g. actor/redo/erank/layer_0_act → act_redo/erank/pol_mlp_linear0
-                        #      critic/redo/srank/layer_1_act → act_redo/srank/val_mlp_linear1
-                        _NET_PREFIX = {'actor': 'pol_mlp', 'critic': 'val_mlp'}
-                        net, _, rest = k.partition('/redo/')
-                        rank_type, _, lname_raw = rest.partition('/')
-                        if lname_raw.startswith('layer_') and lname_raw.endswith('_act'):
-                            idx = lname_raw[len('layer_'):-len('_act')]
-                            net_prefix = _NET_PREFIX.get(net, net)
-                            log_dict[f'act_redo/{rank_type}/{net_prefix}_linear{idx}'] = v
-                        else:
-                            # fallback for non-standard names (e.g. Dormant_*, Act_Mean/*)
-                            log_dict[f'act_redo/{net}/{rest}'] = v
-                    elif '/grad_redo/' in k:
-                        # Convert to dreamer naming: grad_redo/{rank_type}/{net_prefix}_linear{i}
-                        # e.g. actor/grad_redo/GradDormant_0.1/layer_0 → grad_redo/GradDormant_0.1/pol_mlp_linear0
-                        #      critic_0/grad_redo/Grad_Mean/layer_1    → grad_redo/Grad_Mean/val_mlp_linear1
-                        # critic_1 (second Q ensemble member) is skipped — only critic_0 is logged.
-                        _NET_PREFIX_G = {'actor': 'pol_mlp', 'critic': 'val_mlp'}
-                        net, _, rest = k.partition('/grad_redo/')
-                        rank_type, _, lname_raw = rest.partition('/')
-                        # handle vmapped suffix: critic_0 → base=critic, keep; critic_1 → skip
-                        parts = net.rsplit('_', 1)
-                        if len(parts) == 2 and parts[1].isdigit():
-                            if parts[1] != '0':
-                                continue  # skip critic_1, critic_2, …
-                            net_base = parts[0]
-                        else:
-                            net_base = net
-                        if lname_raw.startswith('layer_'):
-                            idx = lname_raw[len('layer_'):]
-                            net_prefix = _NET_PREFIX_G.get(net_base, net_base)
-                            log_dict[f'grad_redo/{rank_type}/{net_prefix}_linear{idx}'] = v
-                        else:
-                            # fallback for non-standard names
-                            log_dict[f'grad_redo/{net_base}/{rest}'] = v
+                        log_dict[_TRAIN_REMAP[k]] = scalar
+                    elif k.startswith('act_redo/'):
+                        log_dict[k] = scalar
+                    elif k.startswith('grad_redo/'):
+                        log_dict[k] = scalar
+                    elif k.startswith('opt/'):
+                        log_dict[k] = scalar
+                    elif k.startswith('wsc/'):
+                        log_dict[f'opt/{k}'] = scalar
                     else:
-                        log_dict[f'train/{k}'] = v
+                        log_dict[f'train/{k}'] = scalar
                 wandb.log(log_dict, step=global_step)
 
         # ---- evaluation ----

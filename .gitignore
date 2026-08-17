@@ -131,3 +131,6 @@ dmypy.json
 
 # Additional ignores for VDRL
 logdir/
+codex-prompt.txt
+codex-cli-executor.log
+task_checklist.md

@@ -1,4 +1,4 @@
-"""SAC agent whose network architecture mirrors DreamerV3.
+"""SAC agents whose network architecture mirrors DreamerV3.
 
 Network design (matching dreamerv3/configs.yaml defaults):
   - Hidden layers : 3 × units       (configurable via model_size)
@@ -16,7 +16,7 @@ under the same continual-learning harness.
 import copy
 import functools
 import re as _re
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import gym
 import jax
@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import flax.linen as nn
-from flax.core.frozen_dict import FrozenDict
+from flax.core.frozen_dict import FrozenDict, unfreeze
 from flax.training.train_state import TrainState
 
 from jaxrl2.agents.agent import Agent
@@ -38,6 +38,8 @@ from jaxrl2.utils.target_update import soft_target_update
 from jaxrl2.utils.redo import SACReDo, SACGradientReDo
 
 import distrax
+
+f32 = jnp.float32
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +181,20 @@ def _make_dreamer_opt(
     return optax.chain(*chain)
 
 
+def _make_sac_opt(lr: float, **kwargs) -> optax.GradientTransformation:
+    optimizer = str(kwargs.pop('optimizer', 'adam')).lower()
+    if optimizer == 'adam':
+        return optax.adam(
+            learning_rate=lr,
+            b1=kwargs.get('beta1', 0.9),
+            b2=kwargs.get('beta2', 0.999),
+            eps=kwargs.get('eps', 1e-20),
+        )
+    if optimizer in ('dreamer', 'dreamer_v3', 'dreamerv3'):
+        return _make_dreamer_opt(lr, **kwargs)
+    raise ValueError(f'Unknown optimizer {optimizer!r}')
+
+
 # ---------------------------------------------------------------------------
 # Size presets — mirror dreamerv3/configs.yaml (units × 3 layers for policy/value)
 # ---------------------------------------------------------------------------
@@ -193,6 +209,226 @@ SAC_SIZES = {
     'size200m': (1024, 1024, 1024),  # units: 1024
     'size400m': (1536, 1536, 1536),  # units: 1536
 }
+
+
+# ---------------------------------------------------------------------------
+# Flax WSC controller for SAC/DrQ-style modules
+# ---------------------------------------------------------------------------
+
+_LAYER_PARAM_NAMES = frozenset(('kernel', 'bias'))
+
+
+def _tree_get(tree: Dict, path: str) -> Optional[Any]:
+    node = tree
+    for part in path.split('/'):
+        if not (isinstance(node, dict) or hasattr(node, 'items')):
+            return None
+        node = node.get(part)
+        if node is None:
+            return None
+    return node
+
+
+def _tree_set(tree: Dict, path: str, value: Any) -> Dict:
+    head, _, tail = path.partition('/')
+    new = dict(tree)
+    if not tail:
+        new[head] = value
+    else:
+        new[head] = _tree_set(dict(new.get(head, {})), tail, value)
+    return new
+
+
+def _flatten_param_paths(tree: Dict, prefix: str = '') -> Dict[str, Any]:
+    out = {}
+    for key, value in tree.items():
+        path = f'{prefix}/{key}' if prefix else key
+        if isinstance(value, dict) or hasattr(value, 'items'):
+            out.update(_flatten_param_paths(value, path))
+        else:
+            out[path] = value
+    return out
+
+
+def _copy_tree(tree):
+    if isinstance(tree, dict) or hasattr(tree, 'items'):
+        return {k: _copy_tree(v) for k, v in tree.items()}
+    return tree
+
+
+def _layer_path(key: str) -> Optional[str]:
+    if '/' not in key:
+        return None
+    path, name = key.rsplit('/', 1)
+    return path if name in _LAYER_PARAM_NAMES else None
+
+
+def _metric_name(path: str) -> str:
+    return path.replace('/', '_')
+
+
+def _following_rmsnorm_path(path: str) -> Optional[str]:
+    parent, _, leaf = path.rpartition('/')
+    def sibling(name: str) -> str:
+        return f'{parent}/{name}' if parent else name
+    if leaf.startswith('layer_') and leaf[len('layer_'):].isdigit():
+        return sibling(f'norm_{leaf[len("layer_"):]}')
+    if leaf.startswith(('Dense_', 'Conv_')):
+        suffix = leaf.split('_', 1)[1]
+        if suffix.isdigit():
+            return sibling(f'{leaf}_norm')
+    return None
+
+
+def _has_following_rmsnorm(path: str, params: Dict) -> bool:
+    norm = _following_rmsnorm_path(path)
+    return bool(norm and _tree_get(params, f'{norm}/scale') is not None)
+
+
+def _layer_groups(params: Dict, skip_last_layer: bool) -> Dict[str, list[str]]:
+    groups = {}
+    for key in _flatten_param_paths(params):
+        path = _layer_path(key)
+        if path is None:
+            continue
+        if skip_last_layer and not _has_following_rmsnorm(path, params):
+            continue
+        groups.setdefault(path, []).append(key)
+    return groups
+
+
+def _all_layer_groups(params: Dict) -> Dict[str, list[str]]:
+    groups = {}
+    for key in _flatten_param_paths(params):
+        path = _layer_path(key)
+        if path is not None:
+            groups.setdefault(path, []).append(key)
+    return groups
+
+
+def _layer_norm(params: Dict, path: str) -> jnp.ndarray:
+    total = jnp.asarray(0.0, f32)
+    for name in _LAYER_PARAM_NAMES:
+        value = _tree_get(params, f'{path}/{name}')
+        if value is not None:
+            total = total + jnp.square(f32(value)).sum()
+    return jnp.sqrt(total)
+
+
+def _layer_output_dim(params: Dict, path: str) -> int:
+    bias = _tree_get(params, f'{path}/bias')
+    if bias is not None and getattr(bias, 'shape', ()):
+        return int(bias.shape[-1])
+    kernel = _tree_get(params, f'{path}/kernel')
+    if kernel is not None and getattr(kernel, 'shape', ()):
+        return int(kernel.shape[-1])
+    return 1
+
+
+def _dout_target_norm(params: Dict, path: str) -> jnp.ndarray:
+    dout = jnp.asarray(_layer_output_dim(params, path), f32)
+    return jnp.sqrt(jnp.maximum(dout, jnp.asarray(1.0, f32))) / 8.0
+
+
+def _constantinit_target_norm(params: Dict, path: str) -> jnp.ndarray:
+    return _layer_norm(params, path) / 8.0
+
+
+class FlaxWSC:
+    """Minimal WSC projection for Flax SAC networks."""
+
+    def __init__(
+        self,
+        mechanism: str = 'disabled',
+        target: str = 'all',
+        eps: float = 1e-8,
+        factor_min: float = 0.01,
+        factor_max: float = 100.0,
+    ):
+        lower = str(mechanism or 'disabled').lower()
+        self.mechanism = lower
+        self.target = str(target or 'all').lower()
+        self.active = (
+            lower.startswith('wsc') and
+            lower not in ('disabled', 'off', 'none', 'no_wsc'))
+        self.skip_last_layer = 'skip_last_layer' in lower
+        self.constantinit = 'constantinit' in lower
+        self.dout = 'dout' in lower
+        if not (self.dout or self.constantinit) and self.active:
+            raise ValueError(
+                f'Unsupported SAC WSC mechanism {mechanism!r}; '
+                'only wsc_skip_last_layer_dout* and '
+                'wsc_skip_last_layer_constantinit* are currently implemented.')
+        if self.target != 'all':
+            raise ValueError(
+                f'Unsupported SAC WSC target {target!r}; only target=all is implemented.')
+        self.eps = eps
+        self.factor_min = factor_min
+        self.factor_max = factor_max
+        self._projectors = {}
+
+    def apply(self, params, prefix: str) -> Tuple[Any, Dict[str, jnp.ndarray]]:
+        if not self.active:
+            return params, {}
+        mutable = unfreeze(params) if hasattr(params, '_dict') else params
+        projector = self._projectors.get(prefix)
+        if projector is None:
+            projector = self._build_projector(mutable, prefix)
+            self._projectors[prefix] = projector
+        return projector(mutable)
+
+    def _build_projector(self, params, prefix: str):
+        all_groups = _all_layer_groups(params)
+        groups = _layer_groups(params, self.skip_last_layer)
+
+        def target_norm(path):
+            if self.constantinit:
+                return _constantinit_target_norm(params, path)
+            return _dout_target_norm(params, path)
+
+        group_specs = tuple(
+            (path, tuple(keys), float(target_norm(path)))
+            for path, keys in groups.items())
+        skipped_specs = ()
+        if self.skip_last_layer:
+            skipped_specs = tuple(
+                path for path in all_groups
+                if path not in groups)
+        eps = float(self.eps)
+        factor_min = float(self.factor_min)
+        factor_max = float(self.factor_max)
+
+        def project(tree):
+            mutable_tree = tree
+            metrics = {}
+            for path, keys, target_value in group_specs:
+                norm = _layer_norm(mutable_tree, path)
+                target = jnp.asarray(target_value, f32)
+                factor = target / jnp.maximum(norm, jnp.asarray(eps, f32))
+                factor = jnp.where(
+                    jnp.isfinite(factor), factor, jnp.asarray(1.0, f32))
+                factor = jnp.clip(
+                    factor, jnp.asarray(factor_min, f32),
+                    jnp.asarray(factor_max, f32))
+                for key in keys:
+                    value = _tree_get(mutable_tree, key)
+                    mutable_tree = _tree_set(
+                        mutable_tree, key, value * factor.astype(value.dtype))
+                lname = f'{prefix}_{_metric_name(path)}'
+                metrics[f'wsc/factor/{lname}'] = f32(factor)
+                metrics[f'wsc/pre_norm/{lname}'] = f32(norm)
+                metrics[f'wsc/target_norm/{lname}'] = f32(target)
+                if self.skip_last_layer:
+                    metrics[f'wsc/controlled/{lname}'] = jnp.asarray(1.0, f32)
+            for path in skipped_specs:
+                lname = f'{prefix}_{_metric_name(path)}'
+                metrics[f'wsc/factor/{lname}'] = jnp.asarray(1.0, f32)
+                metrics[f'wsc/pre_norm/{lname}'] = f32(_layer_norm(mutable_tree, path))
+                metrics[f'wsc/target_norm/{lname}'] = jnp.asarray(jnp.nan, f32)
+                metrics[f'wsc/controlled/{lname}'] = jnp.asarray(0.0, f32)
+            return mutable_tree, metrics
+
+        return jax.jit(project)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +468,8 @@ class _SiLUMLP(nn.Module):
             if i + 1 < len(self.hidden_dims) or self.activate_final:
                 # DreamerV3 order: Dense → RMSNorm → SiLU
                 x = nn.RMSNorm(name=f'norm_{i}')(x)
+                if self.is_mutable_collection('intermediates'):
+                    self.sow('intermediates', f'norm_{i}_out', x)
                 x = silu(x)
                 if self.dropout_rate is not None and self.dropout_rate > 0:
                     x = nn.Dropout(rate=self.dropout_rate)(
@@ -414,6 +652,7 @@ class SACDreamerLearner(Agent):
         vd_mode: str = "disabled",
         redo: Optional[Dict] = None,
         opt: Optional[Dict] = None,
+        wsc: Optional[Dict] = None,
     ):
         action_dim = action_space.shape[-1]
 
@@ -460,6 +699,7 @@ class SACDreamerLearner(Agent):
             schedule = opt.get('schedule', 'const'),
             warmup   = opt.get('warmup',   1000),
             anneal   = opt.get('anneal',   0),
+            optimizer = opt.get('optimizer', 'adam'),
         )
         self._opt_kwargs = opt_kwargs
 
@@ -469,7 +709,7 @@ class SACDreamerLearner(Agent):
         actor = TrainState.create(
             apply_fn=actor_def.apply,
             params=actor_params,
-            tx=_make_dreamer_opt(actor_lr, **opt_kwargs),
+            tx=_make_sac_opt(actor_lr, **opt_kwargs),
         )
 
         critic_def = StateActionEnsembleSiLU(hidden_dims, num_qs=2)
@@ -480,7 +720,7 @@ class SACDreamerLearner(Agent):
         critic = TrainState.create(
             apply_fn=critic_def.apply,
             params=critic_params,
-            tx=_make_dreamer_opt(critic_lr, **opt_kwargs),
+            tx=_make_sac_opt(critic_lr, **opt_kwargs),
         )
         target_critic_params = copy.deepcopy(critic_params)
 
@@ -489,7 +729,7 @@ class SACDreamerLearner(Agent):
         temp = TrainState.create(
             apply_fn=temp_def.apply,
             params=temp_params,
-            tx=_make_dreamer_opt(temp_lr, **opt_kwargs),
+            tx=_make_sac_opt(temp_lr, **opt_kwargs),
         )
 
         self._actor = actor
@@ -528,10 +768,13 @@ class SACDreamerLearner(Agent):
         self._critic_redo = SACReDo(name='critic', **redo_kw, skip_last_layer=skip) \
             if redo.get('redo_enabled', False) else None
         grad_kw = {k: v for k, v in redo_kw.items() if k != 'rank_threshold'}
-        self._actor_grad_redo = SACGradientReDo(name='actor', **grad_kw) \
-            if redo.get('grad_redo_enabled', False) else None
-        self._critic_grad_redo = SACGradientReDo(name='critic', **grad_kw) \
-            if redo.get('grad_redo_enabled', False) else None
+        self._grad_redo_enabled = bool(redo.get('grad_redo_enabled', False))
+        self._grad_redo_frequency = int(grad_kw['frequency'])
+        self._grad_redo_reset_start = int(grad_kw['reset_start'])
+        self._grad_redo_reset_end = int(grad_kw['reset_end'])
+        self._grad_redo_skip_last_layer = bool(skip)
+        self._actor_grad_redo = None
+        self._critic_grad_redo = None
 
     # ------------------------------------------------------------------
     # Agent reset
@@ -546,7 +789,7 @@ class SACDreamerLearner(Agent):
             actor_key, self._observations_sample)["params"]
         self._actor = self._actor.replace(
             params=actor_params,
-            opt_state=_make_dreamer_opt(self._actor_lr, **self._opt_kwargs).init(actor_params),
+            opt_state=_make_sac_opt(self._actor_lr, **self._opt_kwargs).init(actor_params),
             step=0,
         )
 
@@ -556,7 +799,7 @@ class SACDreamerLearner(Agent):
         )["params"]
         self._critic = self._critic.replace(
             params=critic_params,
-            opt_state=_make_dreamer_opt(self._critic_lr, **self._opt_kwargs).init(critic_params),
+            opt_state=_make_sac_opt(self._critic_lr, **self._opt_kwargs).init(critic_params),
             step=0,
         )
         self._target_critic_params = copy.deepcopy(critic_params)
@@ -564,7 +807,7 @@ class SACDreamerLearner(Agent):
         temp_params = self._temp_def.init(temp_key)["params"]
         self._temp = self._temp.replace(
             params=temp_params,
-            opt_state=_make_dreamer_opt(self._temp_lr, **self._opt_kwargs).init(temp_params),
+            opt_state=_make_sac_opt(self._temp_lr, **self._opt_kwargs).init(temp_params),
             step=0,
         )
         for obj in (self._actor_redo, self._critic_redo,
@@ -686,8 +929,6 @@ class SACDreamerLearner(Agent):
         def _walk(node, prefix):
             if not (isinstance(node, dict) or hasattr(node, 'items')):
                 v = node[0] if isinstance(node, tuple) and len(node) == 1 else node
-                if hasattr(v, 'ndim') and v.ndim >= 2:
-                    v = v[0]
                 flat[prefix] = v
                 return
             for k, v in node.items():
@@ -955,8 +1196,137 @@ class StateActionTwoHotEnsembleSiLU(nn.Module):
 # JIT-compiled update step for distributional SAC
 # ---------------------------------------------------------------------------
 
+def _tree_rms(tree) -> jnp.ndarray:
+    leaves = [f32(x) for x in jax.tree_util.tree_leaves(tree)]
+    if not leaves:
+        return jnp.asarray(0.0, f32)
+    total = sum([jnp.square(x).sum() for x in leaves])
+    count = sum([x.size for x in leaves])
+    return jnp.sqrt(total / jnp.maximum(jnp.asarray(count, f32), 1.0))
+
+
+def _param_count(tree) -> jnp.ndarray:
+    leaves = jax.tree_util.tree_leaves(tree)
+    return jnp.asarray(sum([x.size for x in leaves]), f32)
+
+
+def _apply_gradients_with_opt_metrics(
+    state: TrainState,
+    grads,
+    module: str,
+) -> Tuple[TrainState, Dict[str, jnp.ndarray]]:
+    updates, new_opt_state = state.tx.update(grads, state.opt_state, state.params)
+    new_params = optax.apply_updates(state.params, updates)
+    new_state = state.replace(
+        step=state.step + 1,
+        params=new_params,
+        opt_state=new_opt_state,
+    )
+    metrics = {
+        f'opt/{module}/grad_norm': optax.global_norm(grads),
+        f'opt/{module}/grad_rms': _tree_rms(grads),
+        f'opt/{module}/update_rms': _tree_rms(updates),
+        f'opt/{module}/param_rms': _tree_rms(state.params),
+        f'opt/{module}/param_count': _param_count(state.params),
+    }
+    flat_grads = _flatten_param_paths(grads)
+    flat_updates = _flatten_param_paths(updates)
+    for key, grad in flat_grads.items():
+        path = _layer_path(key)
+        if path is None:
+            continue
+        lname = f'{module}_{_metric_name(path)}'
+        pname = key.rsplit('/', 1)[-1]
+        metrics[f'opt/raw_grad_mean/{lname}/{pname}'] = jnp.abs(f32(grad)).mean()
+        if key in flat_updates:
+            metrics[f'opt/update_mean/{lname}/{pname}'] = (
+                jnp.abs(f32(flat_updates[key])).mean())
+    return new_state, metrics
+
+
+def _grad_redo_diagnostics(
+    module: str,
+    params,
+    grads,
+    step: jnp.ndarray,
+    enabled: bool,
+    frequency: int,
+    reset_start: int,
+    reset_end: int,
+    skip_last_layer: bool,
+) -> Dict[str, jnp.ndarray]:
+    if not enabled:
+        return {}
+    if frequency <= 0:
+        frequency = 1
+    in_range = jnp.asarray(True)
+    if reset_end > 0:
+        in_range = (step >= reset_start) & (step <= reset_end)
+    elif reset_start > 0:
+        in_range = step >= reset_start
+    should = (step > 0) & ((step % frequency) == 0) & in_range
+    metrics = {}
+    flat_grads = _flatten_param_paths(grads)
+    for key, grad in flat_grads.items():
+        if not key.endswith('/kernel'):
+            continue
+        path = key[:-len('/kernel')]
+        if skip_last_layer and not _has_following_rmsnorm(path, params):
+            continue
+        if getattr(grad, 'ndim', 0) < 2:
+            continue
+        is_vmapped = grad.ndim >= 3
+        members = grad.shape[0] if is_vmapped else 1
+        for idx in range(members):
+            g = grad[idx] if is_vmapped else grad
+            score = jnp.abs(f32(g)).mean(axis=tuple(range(g.ndim - 1)))
+            norm_score = score / (score.mean() + 1e-9)
+            lname = f'{module}_{idx}_{_metric_name(path)}' if is_vmapped else (
+                f'{module}_{_metric_name(path)}')
+            for tau in (0.05, 0.1, 0.2, 0.4):
+                metrics[f'grad_redo/GradDormant_{tau}/{lname}'] = jnp.where(
+                    should, f32(norm_score <= tau).mean() * 100, jnp.nan)
+            metrics[f'grad_redo/Grad_Mean/{lname}'] = jnp.where(
+                should, score.mean(), jnp.nan)
+    return metrics
+
+
+def _linear_wb_fnorm_metrics(params, module: str) -> Dict[str, jnp.ndarray]:
+    metrics = {}
+    flat = _flatten_param_paths(params)
+    for key, kernel in flat.items():
+        if not key.endswith('/kernel') or getattr(kernel, 'ndim', 0) < 2:
+            continue
+        path = key[:-len('/kernel')]
+        total = jnp.square(f32(kernel)).sum()
+        bias = flat.get(f'{path}/bias')
+        if bias is not None:
+            total = total + jnp.square(f32(bias)).sum()
+        lname = f'{module}_{_metric_name(path)}'
+        metrics[f'act_redo/Linear_WB_FNorm/{lname}'] = jnp.sqrt(total)
+    return metrics
+
+
+def _rmsnorm_output_metrics(activations: Dict, module: str) -> Dict[str, jnp.ndarray]:
+    metrics = {}
+    for path, act in activations.items():
+        leaf = path.split('/')[-1]
+        if not (leaf.startswith('norm_') and leaf.endswith('_out')):
+            continue
+        act = f32(act)
+        if act.ndim < 2:
+            continue
+        act_2d = act.reshape((-1, act.shape[-1]))
+        lname = f'{module}_{_metric_name(path)}'
+        metrics[f'act_redo/RMSNorm_Out_L2_Mean/{lname}'] = (
+            jnp.linalg.norm(act_2d, axis=-1).mean())
+    return metrics
+
 @functools.partial(jax.jit, static_argnames=(
-    "backup_entropy", "critic_reduction", "num_bins"))
+    "backup_entropy", "critic_reduction", "num_bins",
+    "grad_redo_enabled", "grad_redo_frequency",
+    "grad_redo_reset_start", "grad_redo_reset_end",
+    "grad_redo_skip_last_layer"))
 def _update_jit_dreamer_dist(
     rng: PRNGKey,
     actor: TrainState,
@@ -970,6 +1340,11 @@ def _update_jit_dreamer_dist(
     backup_entropy: bool,
     critic_reduction: str,
     num_bins: int,
+    grad_redo_enabled: bool,
+    grad_redo_frequency: int,
+    grad_redo_reset_start: int,
+    grad_redo_reset_end: int,
+    grad_redo_skip_last_layer: bool,
 ) -> Tuple[PRNGKey, TrainState, TrainState, Params, TrainState, Dict]:
     """SAC update with TwoHot distributional critic (mirrors DreamerV3 value).
 
@@ -1020,8 +1395,14 @@ def _update_jit_dreamer_dist(
             "target_actor_entropy": -next_log_probs.mean(),
         }
 
-    grads, critic_info = jax.grad(critic_loss_fn, has_aux=True)(critic.params)
-    new_critic = critic.apply_gradients(grads=grads)
+    critic_grads, critic_info = jax.grad(critic_loss_fn, has_aux=True)(critic.params)
+    new_critic, critic_opt_info = _apply_gradients_with_opt_metrics(
+        critic, critic_grads, 'critic')
+    critic_grad_redo_info = _grad_redo_diagnostics(
+        'critic', critic.params, critic_grads, new_critic.step,
+        grad_redo_enabled, grad_redo_frequency,
+        grad_redo_reset_start, grad_redo_reset_end,
+        grad_redo_skip_last_layer)
     new_target_critic_params = soft_target_update(
         new_critic.params, target_critic_params, tau)
 
@@ -1040,15 +1421,29 @@ def _update_jit_dreamer_dist(
         loss = (log_probs * temp.apply_fn({"params": temp.params}) - q).mean()
         return loss, {"actor_loss": loss, "entropy": -log_probs.mean()}
 
-    grads, actor_info = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
-    new_actor = actor.apply_gradients(grads=grads)
+    actor_grads, actor_info = jax.grad(actor_loss_fn, has_aux=True)(actor.params)
+    new_actor, actor_opt_info = _apply_gradients_with_opt_metrics(
+        actor, actor_grads, 'actor')
+    actor_grad_redo_info = _grad_redo_diagnostics(
+        'actor', actor.params, actor_grads, new_actor.step,
+        grad_redo_enabled, grad_redo_frequency,
+        grad_redo_reset_start, grad_redo_reset_end,
+        grad_redo_skip_last_layer)
 
     new_temp, alpha_info = update_temperature(
         temp, actor_info["entropy"], target_entropy)
 
     return (
         rng, new_actor, new_critic, new_target_critic_params, new_temp,
-        {**critic_info, **actor_info, **alpha_info})
+        {
+            **critic_info,
+            **actor_info,
+            **alpha_info,
+            **critic_opt_info,
+            **actor_opt_info,
+            **critic_grad_redo_info,
+            **actor_grad_redo_info,
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -1088,6 +1483,7 @@ class SACDreamerDistLearner(Agent):
         vd_mode: str = "disabled",
         redo: Optional[Dict] = None,
         opt: Optional[Dict] = None,
+        wsc: Optional[Dict] = None,
     ):
         action_dim = action_space.shape[-1]
 
@@ -1132,16 +1528,29 @@ class SACDreamerDistLearner(Agent):
             schedule = opt.get('schedule', 'const'),
             warmup   = opt.get('warmup',   1000),
             anneal   = opt.get('anneal',   0),
+            optimizer = opt.get('optimizer', 'adam'),
         )
         self._opt_kwargs = opt_kwargs
+
+        wsc = wsc or {}
+        self._wsc = FlaxWSC(
+            mechanism=wsc.get('mechanism', 'disabled'),
+            target=wsc.get('target', 'all'),
+            eps=wsc.get('eps', 1e-8),
+            factor_min=wsc.get('factor_min', 0.01),
+            factor_max=wsc.get('factor_max', 100.0),
+        )
+        self._pending_wsc_metrics = {}
 
         # Actor: same NormalTanhPolicySiLU (mean+std, tanh-squashed)
         actor_def = NormalTanhPolicySiLU(hidden_dims, action_dim, low=low, high=high)
         actor_params = actor_def.init(actor_key, observations)["params"]
+        actor_params, mets = self._wsc.apply(actor_params, 'actor')
+        self._pending_wsc_metrics.update(mets)
         actor = TrainState.create(
             apply_fn=actor_def.apply,
             params=actor_params,
-            tx=_make_dreamer_opt(actor_lr, **opt_kwargs),
+            tx=_make_sac_opt(actor_lr, **opt_kwargs),
         )
 
         # Critic: TwoHot distributional (logits → num_bins)
@@ -1151,10 +1560,12 @@ class SACDreamerDistLearner(Agent):
             {"params": critic_key},
             observations, actions,
         )["params"]
+        critic_params, mets = self._wsc.apply(critic_params, 'critic')
+        self._pending_wsc_metrics.update(mets)
         critic = TrainState.create(
             apply_fn=critic_def.apply,
             params=critic_params,
-            tx=_make_dreamer_opt(critic_lr, **opt_kwargs),
+            tx=_make_sac_opt(critic_lr, **opt_kwargs),
         )
         target_critic_params = copy.deepcopy(critic_params)
 
@@ -1163,7 +1574,7 @@ class SACDreamerDistLearner(Agent):
         temp = TrainState.create(
             apply_fn=temp_def.apply,
             params=temp_params,
-            tx=_make_dreamer_opt(temp_lr, **opt_kwargs),
+            tx=_make_sac_opt(temp_lr, **opt_kwargs),
         )
 
         self._actor = actor
@@ -1202,10 +1613,13 @@ class SACDreamerDistLearner(Agent):
         self._critic_redo = SACReDo(name='critic', **redo_kw, skip_last_layer=skip) \
             if redo.get('redo_enabled', False) else None
         grad_kw = {k: v for k, v in redo_kw.items() if k != 'rank_threshold'}
-        self._actor_grad_redo = SACGradientReDo(name='actor', **grad_kw) \
-            if redo.get('grad_redo_enabled', False) else None
-        self._critic_grad_redo = SACGradientReDo(name='critic', **grad_kw) \
-            if redo.get('grad_redo_enabled', False) else None
+        self._grad_redo_enabled = bool(redo.get('grad_redo_enabled', False))
+        self._grad_redo_frequency = int(grad_kw['frequency'])
+        self._grad_redo_reset_start = int(grad_kw['reset_start'])
+        self._grad_redo_reset_end = int(grad_kw['reset_end'])
+        self._grad_redo_skip_last_layer = bool(skip)
+        self._actor_grad_redo = None
+        self._critic_grad_redo = None
 
     # ------------------------------------------------------------------
     # Reset
@@ -1216,9 +1630,10 @@ class SACDreamerDistLearner(Agent):
 
         actor_params = self._actor_def.init(
             actor_key, self._observations_sample)["params"]
+        actor_params, _ = self._wsc.apply(actor_params, 'actor')
         self._actor = self._actor.replace(
             params=actor_params,
-            opt_state=_make_dreamer_opt(self._actor_lr, **self._opt_kwargs).init(actor_params),
+            opt_state=_make_sac_opt(self._actor_lr, **self._opt_kwargs).init(actor_params),
             step=0,
         )
 
@@ -1226,9 +1641,10 @@ class SACDreamerDistLearner(Agent):
             {"params": critic_key},
             self._observations_sample, self._actions_sample,
         )["params"]
+        critic_params, _ = self._wsc.apply(critic_params, 'critic')
         self._critic = self._critic.replace(
             params=critic_params,
-            opt_state=_make_dreamer_opt(self._critic_lr, **self._opt_kwargs).init(critic_params),
+            opt_state=_make_sac_opt(self._critic_lr, **self._opt_kwargs).init(critic_params),
             step=0,
         )
         self._target_critic_params = copy.deepcopy(critic_params)
@@ -1236,7 +1652,7 @@ class SACDreamerDistLearner(Agent):
         temp_params = self._temp_def.init(temp_key)["params"]
         self._temp = self._temp.replace(
             params=temp_params,
-            opt_state=_make_dreamer_opt(self._temp_lr, **self._opt_kwargs).init(temp_params),
+            opt_state=_make_sac_opt(self._temp_lr, **self._opt_kwargs).init(temp_params),
             step=0,
         )
         for obj in (self._actor_redo, self._critic_redo,
@@ -1283,6 +1699,11 @@ class SACDreamerDistLearner(Agent):
             self.backup_entropy,
             self.critic_reduction,
             self.num_bins,
+            self._grad_redo_enabled,
+            self._grad_redo_frequency,
+            self._grad_redo_reset_start,
+            self._grad_redo_reset_end,
+            self._grad_redo_skip_last_layer,
         )
         self._rng = new_rng
         self._actor = new_actor
@@ -1290,12 +1711,26 @@ class SACDreamerDistLearner(Agent):
         self._target_critic_params = new_target_critic_params
         self._temp = new_temp
 
+        wsc_info = {}
+        actor_params, mets = self._wsc.apply(self._actor.params, 'actor')
+        if mets:
+            self._actor = self._actor.replace(params=actor_params)
+            wsc_info.update(mets)
+        critic_params, mets = self._wsc.apply(self._critic.params, 'critic')
+        if mets:
+            self._critic = self._critic.replace(params=critic_params)
+            wsc_info.update(mets)
+            target_params, _ = self._wsc.apply(self._target_critic_params, 'critic_target')
+            self._target_critic_params = target_params
+        if self._pending_wsc_metrics:
+            wsc_info.update(self._pending_wsc_metrics)
+            self._pending_wsc_metrics = {}
+        info.update(wsc_info)
+
         # ReDo analysis
         redo_due = (
             (self._actor_redo is not None and self._actor_redo.should_run()) or
-            (self._critic_redo is not None and self._critic_redo.should_run()) or
-            (self._actor_grad_redo is not None and self._actor_grad_redo.should_run()) or
-            (self._critic_grad_redo is not None and self._critic_grad_redo.should_run())
+            (self._critic_redo is not None and self._critic_redo.should_run())
         )
         if redo_due:
             obs     = np.asarray(batch['observations'])
@@ -1347,8 +1782,6 @@ class SACDreamerDistLearner(Agent):
         def _walk(node, prefix):
             if not (isinstance(node, dict) or hasattr(node, 'items')):
                 v = node[0] if isinstance(node, tuple) and len(node) == 1 else node
-                if hasattr(v, 'ndim') and v.ndim >= 2:
-                    v = v[0]
                 flat[prefix] = v
                 return
             for k, v in node.items():
@@ -1362,6 +1795,8 @@ class SACDreamerDistLearner(Agent):
         if self._actor_redo is not None and self._actor_redo.should_run():
             self._rng, key = jax.random.split(self._rng)
             acts = self._collect_actor_acts_dist(obs)
+            info.update(_linear_wb_fnorm_metrics(self._actor.params, 'actor'))
+            info.update(_rmsnorm_output_metrics(acts, 'actor'))
             new_p, mets = self._actor_redo.step(self._actor.params, acts, key)
             self._actor = self._actor.replace(params=new_p)
             info.update(mets)
@@ -1371,6 +1806,8 @@ class SACDreamerDistLearner(Agent):
         if self._critic_redo is not None and self._critic_redo.should_run():
             self._rng, key = jax.random.split(self._rng)
             acts = self._collect_critic_acts_dist(obs, actions)
+            info.update(_linear_wb_fnorm_metrics(self._critic.params, 'critic'))
+            info.update(_rmsnorm_output_metrics(acts, 'critic'))
             new_p, mets = self._critic_redo.step(self._critic.params, acts, key)
             self._critic = self._critic.replace(params=new_p)
             info.update(mets)

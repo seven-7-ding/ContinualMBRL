@@ -5,3 +5,4 @@ from jaxrl2.agents.pixel_bc import PixelBCLearner
 from jaxrl2.agents.pixel_iql import PixelIQLLearner
 from jaxrl2.agents.sac import SACLearner
 from jaxrl2.agents.sac_dreamer_learner import DreamerEnvLearner
+from jaxrl2.agents.sac_dreamer_dist_learner import SACDreamerDistLearner, SACDreamerLearner

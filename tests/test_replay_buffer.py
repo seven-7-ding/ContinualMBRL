@@ -14,6 +14,9 @@ def test_replay_buffer():
     env = gym.make("HalfCheetah-v3")
 
     replay_buffer = ReplayBuffer(env.observation_space, env.action_space, CAPACITY)
+    usage = replay_buffer.ram_usage()
+    assert usage["allocated_bytes"] > 0
+    assert usage["capacity"] == CAPACITY
 
     for i in range(2 * CAPACITY):
         obs = env.observation_space.sample()
@@ -31,6 +34,8 @@ def test_replay_buffer():
         )
 
     replay_buffer.sample(BATCH_SIZE)
+    usage = replay_buffer.ram_usage()
+    assert usage["used_bytes"] == usage["allocated_bytes"]
 
 
 def test_replay_buffer_dict_obs():
@@ -59,6 +64,9 @@ def test_efficient_replay_buffer():
     replay_buffer = MemoryEfficientReplayBuffer(
         env.observation_space, env.action_space, 20
     )
+    usage = replay_buffer.ram_usage()
+    assert usage["allocated_bytes"] > 0
+    assert usage["capacity"] == 20
 
     obs = env.reset()
     obs["pixels"][:] = 1

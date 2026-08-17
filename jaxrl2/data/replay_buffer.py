@@ -34,6 +34,14 @@ def _insert_recursively(
         raise TypeError()
 
 
+def _nbytes_recursively(dataset_dict: DatasetDict) -> int:
+    if isinstance(dataset_dict, np.ndarray):
+        return int(dataset_dict.nbytes)
+    if isinstance(dataset_dict, dict):
+        return sum(_nbytes_recursively(value) for value in dataset_dict.values())
+    raise TypeError()
+
+
 class ReplayBuffer(Dataset):
     def __init__(
         self,
@@ -69,6 +77,32 @@ class ReplayBuffer(Dataset):
 
     def __len__(self) -> int:
         return self._size
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    def allocated_nbytes(self) -> int:
+        return _nbytes_recursively(self.dataset_dict)
+
+    def used_nbytes(self) -> int:
+        if self._capacity <= 0:
+            return 0
+        return int(self.allocated_nbytes() * (self._size / self._capacity))
+
+    def ram_usage(self) -> dict:
+        allocated = self.allocated_nbytes()
+        used = self.used_nbytes()
+        return {
+            "allocated_bytes": allocated,
+            "used_bytes": used,
+            "allocated_mb": allocated / (1024 ** 2),
+            "used_mb": used / (1024 ** 2),
+            "allocated_gb": allocated / (1024 ** 3),
+            "used_gb": used / (1024 ** 3),
+            "size": self._size,
+            "capacity": self._capacity,
+        }
 
     def insert(self, data_dict: DatasetDict):
         _insert_recursively(self.dataset_dict, data_dict, self._insert_index)

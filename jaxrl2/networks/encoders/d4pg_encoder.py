@@ -19,14 +19,20 @@ class D4PGEncoder(nn.Module):
         x = observations.astype(jnp.float32) / 255.0
         x = jnp.reshape(x, (*x.shape[:-2], -1))
 
-        for features, filter_, stride in zip(self.features, self.filters, self.strides):
+        for idx, (features, filter_, stride) in enumerate(
+            zip(self.features, self.filters, self.strides)
+        ):
             x = nn.Conv(
                 features,
                 kernel_size=(filter_, filter_),
                 strides=(stride, stride),
                 kernel_init=default_init(),
                 padding=self.padding,
+                name=f"Conv_{idx}",
             )(x)
-            x = nn.relu(x)
+            x = nn.RMSNorm(name=f"Conv_{idx}_norm")(x)
+            self.sow("intermediates", f"Conv_{idx}_norm_out", x)
+            x = nn.silu(x)
+            self.sow("intermediates", f"conv_{idx}_act", x)
 
         return x.reshape((*x.shape[:-3], -1))

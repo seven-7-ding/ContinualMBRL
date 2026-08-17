@@ -1,3 +1,10 @@
+"""Continual DrQ vision config.
+
+Uses DrQLearner with Dreamer-aligned size presets for actor/critic MLP heads,
+Adam optimizer, optional WSC, optional L2-init regularization, and an explicit
+off-by-default DrQ-v2 random-shift mechanism for future augmentation runs.
+"""
+
 import ml_collections
 
 
@@ -19,15 +26,14 @@ def get_config():
     config.encoder = "d4pg"
 
     config.discount = 0.99
-
     config.tau = 0.005
     config.init_temperature = 0.1
     config.target_entropy = None
     config.backup_entropy = True
     config.critic_reduction = "mean"
-
-    # DrQ-v2 pixel augmentation: replicate/edge padding + random shift.
+    config.augmentation_enabled = False
     config.augmentation_pad = 4
+    config.jax_mem_fraction = 0.25
 
     opt = ml_collections.ConfigDict()
     opt.optimizer = "adam"
@@ -56,5 +62,13 @@ def get_config():
     l2_init.enabled = False
     l2_init.weight = 2e-5
     config.l2_init = l2_init
+
+    redo = ml_collections.ConfigDict()
+    redo.grad_redo_enabled = True
+    redo.grad_redo_frequency = 1000
+    redo.grad_redo_reset_start = 0
+    redo.grad_redo_reset_end = 0
+    redo.grad_redo_skip_last_layer = False
+    config.redo = redo
 
     return config

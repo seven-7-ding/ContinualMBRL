@@ -26,21 +26,28 @@ class PixelMultiplexer(nn.Module):
             len(observations.keys()) <= 2
         ), "Can include only pixels and states fields."
 
-        x = self.encoder(observations["pixels"])
+        pixels = observations["pixels"]
+        x = self.encoder(pixels)
 
         if self.stop_gradient:
             # We do not update conv layers with policy gradients.
             x = jax.lax.stop_gradient(x)
 
-        x = nn.Dense(self.latent_dim, kernel_init=default_init())(x)
-        x = nn.LayerNorm()(x)
+        x = nn.Dense(
+            self.latent_dim, kernel_init=default_init(), name="Dense_0")(x)
+        self.sow("intermediates", "Dense_0_act", x)
+        x = nn.RMSNorm(name="Dense_0_norm")(x)
+        self.sow("intermediates", "Dense_0_norm_out", x)
         x = nn.tanh(x)
 
         if "states" in observations:
-            y = nn.Dense(self.latent_dim, kernel_init=default_init())(
+            y = nn.Dense(
+                self.latent_dim, kernel_init=default_init(), name="Dense_1")(
                 observations["states"]
             )
-            y = nn.LayerNorm()(y)
+            self.sow("intermediates", "Dense_1_act", y)
+            y = nn.RMSNorm(name="Dense_1_norm")(y)
+            self.sow("intermediates", "Dense_1_norm_out", y)
             y = nn.tanh(y)
 
             x = jnp.concatenate([x, y], axis=-1)

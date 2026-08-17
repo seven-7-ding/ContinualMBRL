@@ -13,9 +13,9 @@ def get_config():
     config = ml_collections.ConfigDict()
 
     # ---------- SAC hyperparameters ----------
-    config.actor_lr  = 3e-4
-    config.critic_lr = 3e-4
-    config.temp_lr   = 3e-4
+    config.actor_lr  = 4e-5
+    config.critic_lr = 4e-5
+    config.temp_lr   = 4e-5
 
     # DreamerV3 size1m: 3 layers × 64 units
     config.hidden_dims      = (64, 64, 64)
@@ -45,6 +45,7 @@ def get_config():
 
     # ---------- Optimizer (mirrors dreamerv3/configs.yaml opt block) ----------
     opt = ml_collections.ConfigDict()
+    opt.optimizer = 'adam'
     opt.agc      = 0.3       # adaptive gradient clipping ratio
     opt.eps      = 1e-20     # RMS denominator epsilon
     opt.beta1    = 0.9       # momentum decay
@@ -57,5 +58,14 @@ def get_config():
     opt.warmup   = 1000      # linear warmup steps
     opt.anneal   = 0         # total steps for non-const schedule
     config.opt = opt
+
+    # ---------- WSC (mirrors ContinualMBRL-wsc naming) ----------
+    wsc = ml_collections.ConfigDict()
+    wsc.mechanism = 'disabled'
+    wsc.target = 'all'
+    wsc.eps = 1e-8
+    wsc.factor_min = 0.01
+    wsc.factor_max = 100.0
+    config.wsc = wsc
 
     return config

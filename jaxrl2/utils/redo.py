@@ -199,23 +199,20 @@ class SACReDo:
 
             score      = _neuron_score(act)
             norm_score = score / (score.mean() + 1e-9)
-            lname = path.rsplit('/', 1)[-1]
-            # noised activations go into a separate 'redo_noised' group
-            group = 'redo_noised' if is_noised else 'redo'
-
-            pfx = self.name
+            lname = f'{self.name}_{layer_path.replace("/", "_")}'
+            group = 'redo_noised' if is_noised else 'act_redo'
             for t in _TAU_LIST:
-                metrics[f'{pfx}/{group}/Dormant_{t}/{lname}'] = float(
+                metrics[f'{group}/Dormant_{t}/{lname}'] = float(
                     f32(norm_score <= t).mean() * 100)
-            metrics[f'{pfx}/{group}/Act_Mean/{lname}'] = float(score.mean())
+            metrics[f'{group}/Act_Mean/{lname}'] = float(score.mean())
 
             if need_erank or need_srank:
                 act_2d = f32(act).reshape(-1, act.shape[-1])
                 sv = jnp.linalg.svd(act_2d, compute_uv=False)
                 if need_erank:
-                    metrics[f'{pfx}/{group}/erank/{lname}'] = float(_effective_rank(sv))
+                    metrics[f'{group}/erank/{lname}'] = float(_effective_rank(sv))
                 if need_srank:
-                    metrics[f'{pfx}/{group}/srank/{lname}'] = float(
+                    metrics[f'{group}/srank/{lname}'] = float(
                         _stable_rank(sv, self.rank_threshold))
 
             if not do_reset:
@@ -304,8 +301,7 @@ class SACGradientReDo:
             if grad.ndim < 2:
                 continue
 
-            base_lname = path[:-len('/kernel')].rsplit('/', 1)[-1]
-            pfx = self.name
+            base_lname = path[:-len('/kernel')].replace('/', '_')
 
             # ndim==2: non-vmapped Linear [in, out]  → 1 member
             # ndim==3: vmapped Linear [num_qs, in, out] → num_qs members
@@ -322,12 +318,13 @@ class SACGradientReDo:
 
                 score      = jnp.abs(f32(g_i)).mean(axis=tuple(range(g_i.ndim - 1)))
                 norm_score = score / (score.mean() + 1e-9)
-                member_pfx = f'{pfx}_{qi}' if is_vmapped else pfx
+                lname = (f'{self.name}_{qi}_{base_lname}'
+                         if is_vmapped else f'{self.name}_{base_lname}')
 
                 for t in _TAU_LIST:
-                    metrics[f'{member_pfx}/grad_redo/GradDormant_{t}/{base_lname}'] = float(
+                    metrics[f'grad_redo/GradDormant_{t}/{lname}'] = float(
                         f32(norm_score <= t).mean() * 100)
-                metrics[f'{member_pfx}/grad_redo/Grad_Mean/{base_lname}'] = float(score.mean())
+                metrics[f'grad_redo/Grad_Mean/{lname}'] = float(score.mean())
 
                 if do_reset:
                     mask   = _dormancy_mask(norm_score, self.tau, self.mode)

@@ -1,5 +1,4 @@
 import collections
-import copy
 from typing import Iterable, Optional
 
 import gym
@@ -23,13 +22,13 @@ class MemoryEfficientReplayBuffer(ReplayBuffer):
         low = pixel_obs_space.low[..., 0]
         high = pixel_obs_space.high[..., 0]
         unstacked_pixel_obs_space = Box(low=low, high=high, dtype=pixel_obs_space.dtype)
-        observation_space = copy.deepcopy(observation_space)
+        observation_space = gym.spaces.Dict(dict(observation_space.spaces))
         observation_space.spaces["pixels"] = unstacked_pixel_obs_space
 
         self._first = True
         self._is_correct_index = np.full(capacity, False, dtype=bool)
 
-        next_observation_space_dict = copy.deepcopy(observation_space.spaces)
+        next_observation_space_dict = dict(observation_space.spaces)
         next_observation_space_dict.pop("pixels")
         next_observation_space = gym.spaces.Dict(next_observation_space_dict)
 
@@ -39,6 +38,14 @@ class MemoryEfficientReplayBuffer(ReplayBuffer):
             capacity,
             next_observation_space=next_observation_space,
         )
+
+    def allocated_nbytes(self) -> int:
+        return super().allocated_nbytes() + int(self._is_correct_index.nbytes)
+
+    def used_nbytes(self) -> int:
+        if self._capacity <= 0:
+            return 0
+        return int(self.allocated_nbytes() * (len(self) / self._capacity))
 
     def insert(self, data_dict: DatasetDict):
         if self._insert_index == 0 and self._capacity == len(self) and not self._first:
