@@ -99,6 +99,7 @@ defaults:
     #   wsc_skip_last_layer_init
     #   wsc_skip_last_layer_constant
     #   wsc_skip_last_layer_dout
+    #   wsc_skip_last_layer_constantinit
     #   wsc_skip_last_layer_factor
     #   wsc_init_last_l2_init
     #   wsc_constant_last_l2_init
@@ -178,6 +179,7 @@ defaults:
       # init: restore each layer to its initialization Frobenius norm.
       # constant: restore each layer to target_norm.
       # dout: restore each layer to sqrt(d_out) / 8.
+      # constantinit: restore each layer to its initialization FNorm / 8.
       # lr: multiply each selected layer by 1/(1 + lr * sqrt(param_count)).
       # factor: multiply each selected layer by the current factor rule.
       # wsc_no_scale_* modes do not create/train per-layer wsc_scale params.

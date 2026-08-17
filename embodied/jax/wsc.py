@@ -167,6 +167,8 @@ def parse_mechanism(mechanism, default_norm_mode='init'):
     norm_mode = 'lr'
   elif any(x in lower for x in ('factor', 'scale_factor', 'fixed_c')):
     norm_mode = 'factor'
+  elif 'constantinit' in lower or 'constant_init' in lower:
+    norm_mode = 'constantinit'
   elif 'dout' in lower:
     norm_mode = 'dout'
   elif any(x in lower for x in ('constant', 'target_norm', 'fixed_norm')):
@@ -314,9 +316,10 @@ class WSC(nj.Module):
           self.parsed_last_l2_init_weight_decay, f32)
       metrics['wsc/last_l2_init_layer_count'] = jnp.asarray(
           len(l2_init_groups), f32)
-    if self.parsed_norm_mode not in ('constant', 'init', 'dout'):
+    if self.parsed_norm_mode not in (
+        'constant', 'constantinit', 'init', 'dout'):
       return new_params, metrics
-    if self.parsed_norm_mode == 'init':
+    if self.parsed_norm_mode in ('constantinit', 'init'):
       target_tree = self.sub(
           'target_norms', nj.Tree,
           lambda params: initial_layer_norms(
@@ -330,6 +333,8 @@ class WSC(nj.Module):
       norm = layer_norm(new_params, path)
       if self.parsed_norm_mode == 'constant':
         target = jnp.asarray(self.target_norm, f32)
+      elif self.parsed_norm_mode == 'constantinit':
+        target = f32(target_norms.get(path, norm)) / 8.0
       elif self.parsed_norm_mode == 'dout':
         target = dout_target_norm(new_params, path)
       else:
@@ -405,7 +410,7 @@ class WSC(nj.Module):
       wsc_started = jnp.asarray(step >= self.nograd_start_step)
 
     target_tree = None
-    if self.parsed_norm_mode == 'init':
+    if self.parsed_norm_mode in ('constantinit', 'init'):
       target_tree = self.sub(
           'target_norms', nj.Tree,
           lambda params: initial_layer_norms(
@@ -435,6 +440,10 @@ class WSC(nj.Module):
         target = jnp.asarray(jnp.nan, f32)
       elif self.parsed_norm_mode == 'constant':
         target = jnp.asarray(self.target_norm, f32)
+        factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
+      elif self.parsed_norm_mode == 'constantinit':
+        target = f32(target_norms.get(
+            path, jnp.maximum(norm, jnp.asarray(1.0, f32)))) / 8.0
         factor = target / jnp.maximum(norm, jnp.asarray(self.eps, f32))
       elif self.parsed_norm_mode == 'dout':
         target = dout_target_norm(params, path)
