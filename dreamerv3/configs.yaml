@@ -88,11 +88,15 @@ defaults:
     #   l2_decay_preupdate
     #   l2_init
     #   continual_backprop
+    #   sandp
+    #   sandp_wo_opt
     # Set reset_mechanism to disabled/off/none to disable.
     reset_mechanism: disabled
     # Mechanism targets are defined in embodied/jax/reset_targets.py.
     # Built-ins: all, agent_head, wm_head, dyn, all_head.
     reset_target: all
+    # Mixing coefficient for soft reset mechanisms (sandp/sandp_wo_opt).
+    reset_alpha: 0.5
     # revive_strategy:
     #   fixed      -> always run exactly revive_epoch steps after reset
     #   threshold  -> stop when current loss <= last_loss * revive_threshold,

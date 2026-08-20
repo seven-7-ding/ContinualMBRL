@@ -421,10 +421,130 @@ class Agent(embodied.Agent):
         self.policy_params = internal.move(
             policy_params, self.policy_params_sharding)
 
-  def reset_params(self, *_, **__):
-    raise NotImplementedError(
-        'Legacy reset mechanisms were removed. Use parameter mechanisms via '
-        '--run.reset_mechanism and --run.reset_target.')
+  def reset_params(self, mode='all', mechanism='hard', alpha=0.5):
+    """Reset parameters selected by mode and mechanism.
+
+    Supported mechanisms:
+      - ``hard``: replace selected params and optimizer state.
+      - ``sandp``: blend selected params with a fresh reinitialisation.
+      - ``sandp_wo_opt``: like ``sandp`` without touching optimizer state.
+    """
+
+    mode = reset_targets.canonical_target(mode)
+    aliases = {
+        None: 'hard',
+        False: 'hard',
+        'false': 'hard',
+        'none': 'hard',
+        'hard': 'hard',
+        'reset': 'hard',
+        'sandp': 'sandp',
+        'shrink_and_perturb': 'sandp',
+        'sandp_wo_opt': 'sandp_wo_opt',
+        'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
+    }
+    mechanism = aliases.get(mechanism, mechanism)
+    if mechanism not in ('hard', 'sandp', 'sandp_wo_opt'):
+      raise ValueError(f'Unknown reset mechanism: {mechanism}')
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+      raise ValueError(f'Reset alpha must be in [0, 1], got {alpha}')
+
+    # nj.Tree caches its treedef after the first call to read()/write().
+    # Resetting the optimiser subtree to a freshly created tree avoids stale
+    # treedef reuse when reinitializing params on-demand.
+    opt = getattr(self.model, 'opt', None)
+    if opt is not None:
+      for sub in getattr(opt, '_submodules', {}).values():
+        if hasattr(sub, 'treedef'):
+          sub.treedef = None
+
+    init_seed = None
+    if mechanism in ('sandp', 'sandp_wo_opt'):
+      init_seed = self._next_reset_seed()
+
+    with self.train_mesh:
+      new_params, _ = self._init_params(seed=init_seed)
+
+    with contextlib.ExitStack() as stack:
+      stack.enter_context(self.train_lock)
+      stack.enter_context(self.policy_lock)
+      unused = {}
+
+      matched_param_keys = {
+          k for k in self.params
+          if not k.startswith('opt/') and self._reset_key_matches(k, mode)}
+      reset_keys = [
+          k for k in self.params
+          if k in new_params and (
+              k in matched_param_keys or
+              (mechanism != 'sandp_wo_opt' and
+               self._opt_state_matches_param_reset(k, matched_param_keys)))]
+      if not reset_keys:
+        raise ValueError(f'No parameters matched reset mode: {mode}')
+
+      updated = {}
+      for key in sorted(matched_param_keys):
+        if mechanism == 'hard':
+          updated[key] = new_params[key]
+        else:
+          updated[key] = self._soft_reset_param(
+              key, self.params[key], new_params[key], mechanism, alpha)
+      for key in reset_keys:
+        if key.startswith('opt/'):
+          updated[key] = new_params[key]
+
+      replaced = {k: self.params[k] for k in reset_keys}
+      self.params.update(updated)
+      jax.tree.map(lambda x: x.delete(), replaced)
+      unused = {k: v for k, v in new_params.items() if k not in reset_keys}
+
+      if self.jaxcfg.enable_policy:
+        jax.tree.map(lambda x: x.delete(), self.policy_params)
+        policy_params = {}
+        for key in self.policy_keys:
+          try:
+            policy_params[key] = self.params[key].copy()
+          except RuntimeError:
+            if key in unused:
+              self.params[key] = unused.pop(key)
+              policy_params[key] = self.params[key].copy()
+            else:
+              raise
+        self.policy_params = internal.move(
+            policy_params, self.policy_params_sharding)
+        if self.pending_sync:
+          jax.tree.map(lambda x: x.delete(), self.pending_sync)
+          self.pending_sync = None
+      if unused:
+        jax.tree.map(lambda x: x.delete(), unused)
+      self.reset_counter += 1
+
+  def _opt_state_matches_param_reset(self, key, param_keys):
+    if not key.startswith('opt/'):
+      return False
+    return any(key.endswith(f'/{param_key}') for param_key in param_keys)
+
+  def _soft_reset_param(
+      self, key, current_value, fresh_value, mechanism, alpha):
+    if mechanism == 'hard':
+      return fresh_value
+
+    if jnp.issubdtype(current_value.dtype, jnp.floating):
+      blend = self._sharded_scalar(alpha, current_value)
+      keep = self._sharded_scalar(1.0 - alpha, current_value)
+      if mechanism in ('sandp', 'sandp_wo_opt'):
+        fresh_value = fresh_value.astype(current_value.dtype)
+        return current_value * blend + fresh_value * keep
+    if mechanism == 'sandp':
+      return fresh_value.astype(current_value.dtype)
+    if mechanism == 'sandp_wo_opt':
+      return current_value.copy()
+    raise ValueError(f'Unsupported reset mechanism: {mechanism}')
+
+  def _sharded_scalar(self, value, ref):
+    scalar = np.asarray(value, ref.dtype)
+    return internal.device_put(scalar, ref.sharding)
 
   def _canonical_train_mode(self, mode):
     if mode in (None, False, '', 'false', 'none'):

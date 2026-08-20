@@ -95,9 +95,12 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   if revive_epoch < 0:
     raise ValueError(f'revive_epoch must be >= 0, got {revive_epoch}')
   if reset_frequency > 0 and reset_mechanism == 'disabled':
-    raise ValueError(
+      raise ValueError(
         'run.reset_frequency > 0 requires an enabled parameter mechanism. '
         'Set run.reset_frequency=0 to disable reset scheduling.')
+  reset_alpha = float(getattr(args, 'reset_alpha', 0.5))
+  if not 0.0 <= reset_alpha <= 1.0:
+    raise ValueError(f'reset_alpha must be in [0, 1], got {reset_alpha}')
   if revive_strategy not in ('fixed', 'threshold'):
     raise ValueError(
         f"revive_strategy must be 'fixed' or 'threshold', got "
@@ -311,9 +314,14 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   def periodic_reset():
     print(
         f'Mechanism schedule reached at step {step.value}: '
-        f'mechanism={reset_mechanism}, target={reset_target}. '
-        'The selected mechanism is applied during regular optimizer updates; '
-        'no legacy parameter reset is executed.')
+        f'mechanism={reset_mechanism}, target={reset_target}, alpha={reset_alpha}. '
+        'Invoking scheduled parameter reset if supported by agent.reset_params.')
+
+    if reset_mechanism in ('sandp', 'sandp_wo_opt', 'hard'):
+      agent.reset_params(reset_target, mechanism=reset_mechanism, alpha=reset_alpha)
+      if revive_epoch <= 0:
+        return
+
     if revive_epoch <= 0:
       return
     if reset_target == 'all':

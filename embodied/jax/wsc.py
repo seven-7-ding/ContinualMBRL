@@ -102,11 +102,22 @@ def parse_mechanism(mechanism, default_norm_mode=None):
   lower = str(mechanism or 'disabled').lower()
   if lower in ('', 'none', 'false', 'disabled', 'off'):
     return False, 'disabled', 'disabled'
-  if lower in ('l2_decay', 'l2_decay_preupdate', 'l2_init', 'continual_backprop'):
+  aliases = {
+      'hard': 'hard',
+      'reset': 'disabled',
+      'shrink_and_perturb': 'sandp',
+      'shrink_and_perturb_without_optimizer': 'sandp_wo_opt',
+      'disabled': 'disabled',
+  }
+  lower = aliases.get(lower, lower)
+  if lower in (
+      'hard', 'l2_decay', 'l2_decay_preupdate', 'l2_init',
+      'continual_backprop', 'sandp', 'sandp_wo_opt'):
     return True, lower, lower
   raise ValueError(
       f'Unknown mechanism {mechanism!r}. Supported mechanisms are: '
-      'disabled, l2_decay, l2_decay_preupdate, l2_init, continual_backprop.')
+      'disabled, l2_decay, l2_decay_preupdate, l2_init, '
+      'continual_backprop, hard, sandp, sandp_wo_opt.')
 
 
 def _target_snapshot(params, target):
