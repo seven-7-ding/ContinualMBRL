@@ -6,6 +6,8 @@ import embodied
 from embodied.jax import reset_targets
 from embodied.jax import wsc as wsc_lib
 from embodied.jax.internal import stats
+from .two_player import update_counts, update_modes
+from .diagnostics import make_usage
 import numpy as np
 
 
@@ -17,8 +19,14 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
 
   logdir = elements.Path(args.logdir)
   step = logger.step
-  usage = elements.Usage(**args.usage)
+  usage = make_usage(args.usage)
   train_agg = elements.Agg()
+  setting = getattr(args, 'two_player', 'default')
+  wm_multiplier, agent_multiplier = update_counts(setting)
+  modes = update_modes(setting)
+  latest_metrics = bool(getattr(args, 'latest_train_metrics', False))
+  latest_valid_metrics = {}
+  print(f'Two-player setting: {setting}; multipliers WM={wm_multiplier}, agent={agent_multiplier}')
   epstats = elements.Agg()
   performance_agg = collections.defaultdict(elements.Agg)
   episodes = collections.defaultdict(elements.Agg)
@@ -53,9 +61,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
   print(f'Train ratio: {should_train._ratio}, Batch steps: {batch_steps}, Train calls per step: {args.train_ratio / batch_steps}')
-  # should_log = embodied.LocalClock(args.log_every)
   should_log = elements.when.Every(args.log_every, initial=False)
-  should_report = elements.when.Every(args.report_every)
+  should_report = elements.when.Every(args.report_every, initial=False)
   should_save = embodied.LocalClock(args.save_every)
   # TODO: enable env switching.
   should_switch = None
@@ -221,27 +228,57 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
 
   def add_train_metrics(mets):
     for key, value in mets.items():
+      # Sparse ReDo/rank diagnostics return NaN between analysis steps.
+      # Retain the most recent valid observation instead of poisoning Agg.
+      sparse = (key.startswith(('act_redo/', 'data_diversity/')) or 'grad_redo/' in key)
+      if sparse and np.asarray(value).ndim == 0 and not np.isfinite(value):
+        continue
+      if latest_metrics:
+        latest_valid_metrics[f'train/{key}'] = value
       if key.startswith('mechanism/cbp/reset_count_since_log/'):
         train_agg.add(key, value, agg='sum', prefix='train')
       elif key.startswith('opt/mechanism/l2_init/module_delta_sq/'):
         train_agg.add(key, value, agg='last', prefix='train')
       else:
-        train_agg.add(key, value, prefix='train')
+        train_agg.add(key, value, agg='last' if latest_metrics else 'avg', prefix='train')
 
   def trainfn(tran, worker):
     if len(replay) < args.batch_size * args.batch_length:
       return
     if stream_train[0] is None:
       stream_train[0] = iter(agent.stream(make_stream(replay, 'train')))
-    for _ in range(should_train(step)):
-      with elements.timer.section('stream_next'):
-        batch = next(stream_train[0])
-      carry_train[0], outs, mets = agent.train(carry_train[0], batch)
-      train_fps.step(batch_steps)
-      if 'replay' in outs:
-        replay.update(outs['replay'])
-      update_loss_windows(mets)
-      add_train_metrics(mets)
+    repeats = should_train(step)
+    for _ in range(repeats):
+      if getattr(args, 'fused_updates', False):
+        blocks = [('all', 1)] if setting == 'default' else [
+            ('wm', wm_multiplier), ('agent', agent_multiplier)]
+        group_size = int(args.update_batch)
+        assert group_size > 0
+        for mode, count in blocks:
+          for start in range(0, count, group_size):
+            amount = min(group_size, count - start)
+            batches = [next(stream_train[0]) for _ in range(amount)]
+            carry_train[0], outs = agent.train_many(carry_train[0], batches, mode)
+            train_fps.step(batch_steps * amount)
+            if 'replay' in outs:
+              for index in range(amount):
+                replay.update({k: v[index] for k, v in outs['replay'].items()})
+        continue
+      for mode in modes:
+        # A fresh sample and model rollout for EVERY player update.
+        with elements.timer.section('stream_next'):
+          batch = next(stream_train[0])
+        kwargs = dict(train_mode=mode, latest=latest_metrics) if mode != 'all' or latest_metrics else {}
+        carry_train[0], outs, mets = agent.train(carry_train[0], batch, **kwargs)
+        train_fps.step(batch_steps)
+        if 'replay' in outs:
+          replay.update(outs['replay'])
+        update_loss_windows(mets)
+        add_train_metrics(mets)
+    if repeats and setting != 'default':
+      agent.sync_policy()
+    if repeats and not (logdir / 'training_ready.json').exists():
+      (logdir / 'training_ready.json').write(str(int(step.value)))
 
   def revive(mode, max_steps, label, last_losses):
     if max_steps <= 0:
@@ -406,6 +443,9 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       replay.clear(disk=True, archive_prefix=f'task_switch_{int(step.value)}')
       stream_train[0] = None
       stream_report[0] = None
+      # Persist the new phase together with the cleared replay. This keeps a
+      # resume consistent even if the prior phase's disk data was archived.
+      cp.save()
       print(f"Switched to new environment at step {step.value}.")
 
     driver(policy, steps=10)
@@ -422,7 +462,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(agg.result(), prefix='report')
 
     if should_log(step):
+      if getattr(args, 'fused_updates', False):
+        add_train_metrics(agent.latest_train_metrics())
       train_metrics = train_agg.result()
+      if latest_metrics:
+        train_metrics.update(latest_valid_metrics)
       train_metrics_new = {}
       loss_metrics = {}
       opt_metrics = {}
@@ -434,6 +478,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
           loss_metrics[k.replace('train/loss/', '')] = v
         elif "train/opt/mechanism/l2_init/module_delta_sq/" in k:
           loss_metrics[k.replace('train/opt/', '')] = v
+        elif "train/opt/" in k and "grad_redo" in k:
+          grad_redo_metrics[k.replace('train/opt/', '').replace('grad_redo/', '')] = v
         elif "train/opt/" in k and "grad_redo" not in k:
           opt_metrics[k.replace('train/opt/', '')] = v
         elif "train/act_redo/" in k:
@@ -459,6 +505,11 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
       logger.add({'reset/frequency': float(reset_frequency)})
+      logger.add({'schedule/wm_multiplier': wm_multiplier,
+                  'schedule/agent_multiplier': agent_multiplier,
+                  'schedule/wm_train_ratio': args.train_ratio * wm_multiplier,
+                  'schedule/agent_train_ratio': args.train_ratio * agent_multiplier})
+      logger.add({'env_step': int(step.value)})
       logger.add({'fps/policy': policy_fps.result()})
       logger.add({'fps/train': train_fps.result()})
       logger.add({'timer': elements.timer.stats()['summary']})
@@ -467,4 +518,6 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
     if should_save(step):
       cp.save()
 
+  cp.save()
+  driver.close()
   logger.close()

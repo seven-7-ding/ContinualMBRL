@@ -17,6 +17,8 @@ sg = jax.lax.stop_gradient
 class Optimizer(nj.Module):
 
   summary_depth: int = 2
+  log_gradients: bool = False
+  redo_per_optimizer: bool = False
 
   def __init__(self, modules, opt, lr_schedule=None):
     modules = modules if isinstance(modules, (list, tuple)) else (modules,)
@@ -76,7 +78,8 @@ class Optimizer(nj.Module):
 
     # Gradient-based ReDo: reset dormant neurons before the optimiser update.
     if gradient_redo is not None:
-      redo_metrics, params, grads = gradient_redo.step(params, grads)
+      redo_metrics, params, grads = gradient_redo.step(
+          params, grads, count=self.step.read() + 1 if self.redo_per_optimizer else None)
       metrics.update(redo_metrics)
 
     if wsc_controller is not None:
@@ -114,7 +117,7 @@ class Optimizer(nj.Module):
     metrics['param_rms'] = nets.rms([x.values for x in self.modules])
     if self.lr_schedule is not None:
       metrics['learning_rate'] = f32(self.lr_schedule(self.step.read()))
-    if wsc_controller is not None and wsc_controller.active:
+    if self.log_gradients or (wsc_controller is not None and wsc_controller.active):
       metrics.update(wsc_lib.layer_grad_metrics(raw_grads, updates))
     for module in self.modules:
       metrics[f'{self._module_metric_name(module)}_param_rms'] = nets.rms(

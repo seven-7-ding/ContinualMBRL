@@ -298,15 +298,29 @@ class TwoHot(Output):
       b1 = self.bins[..., :m]
       b2 = self.bins[..., m: m + 1]
       b3 = self.bins[..., m + 1:]
-      wavg = (p2 * b2).sum(-1) + ((p1 * b1)[..., ::-1] + (p3 * b3)).sum(-1)
+      wavg = (p2 * b2).sum(-1) + self._paired_mean(
+          p1[..., ::-1], p3, self.logits[..., :m][..., ::-1],
+          self.logits[..., m + 1:], b1[::-1], b3)
       return self.unsquash(wavg)
     else:
       p1 = self.probs[..., :n // 2]
       p2 = self.probs[..., n // 2:]
       b1 = self.bins[..., :n // 2]
       b2 = self.bins[..., n // 2:]
-      wavg = ((p1 * b1)[..., ::-1] + (p2 * b2)).sum(-1)
+      wavg = self._paired_mean(
+          p1[..., ::-1], p2, self.logits[..., :n // 2][..., ::-1],
+          self.logits[..., n // 2:], b1[::-1], b2)
       return self.unsquash(wavg)
+
+  def _paired_mean(self, pneg, ppos, lneg, lpos, bneg, bpos):
+    # Subtracting two ~1/255 probabilities after rounding, then multiplying
+    # by bins as large as exp(20), amplifies tiny fusion differences. Recover
+    # their difference via expm1 of the logit difference instead. This is the
+    # same categorical expectation, including for asymmetric bin pairs.
+    delta = lpos - lneg
+    difference = jnp.maximum(pneg, ppos) * -jnp.expm1(-jnp.abs(delta))
+    difference = jnp.where(delta >= 0, difference, -difference)
+    return (difference * bpos + pneg * (bneg + bpos)).sum(-1)
 
   def loss(self, target):
     assert target.dtype == f32, target.dtype

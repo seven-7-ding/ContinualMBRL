@@ -82,7 +82,7 @@ orjson==3.11.8
 packaging==26.0
 parso==0.8.6
 pexpect==4.9.0
-pillow==12.2.0
+pillow==11.3.0
 platformdirs==4.9.6
 portal==3.8.1
 prompt_toolkit==3.0.52
@@ -126,3 +126,8 @@ wcwidth==0.6.0
 websockets==16.0
 wrapt==2.1.2
 zipp==3.23.1
+
+imageio==2.38.1
+imageio-ffmpeg==0.6.0
+moviepy==2.2.1
+proglog==0.1.12

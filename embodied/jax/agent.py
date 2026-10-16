@@ -1,5 +1,6 @@
 import contextlib
 import dataclasses
+from functools import partial
 import re
 import threading
 import time
@@ -146,6 +147,22 @@ class Agent(embodied.Agent):
         (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
         return_params=True, donate_params=True, first_outnums=(3,),
         **shared_kwargs)
+    self._train_modes = {}
+    if getattr(self.model, 'two_player', False):
+      for mode in ('wm', 'agent'):
+        self._train_modes[mode] = transform.apply(
+            nj.pure(partial(self.model.train, train_mode=mode)), self.train_mesh,
+            (dona_sharding, allo_sharding, tm, ts, ts), (tp, ts, ts, tm), ar,
+            return_params=True, donate_params=True, first_outnums=(3,),
+            **shared_kwargs)
+    self._raw_train = self._train
+    self._raw_train_modes = dict(self._train_modes)
+    self._train_group_fns = {}
+    self._group_metrics = {}
+    self._group_metric_keys = {}
+    self._loaded_group_metrics = {}
+    self._stack_batches = jax.jit(
+        lambda *batches: jax.tree.map(lambda *xs: jnp.stack(xs), *batches))
     self._report = transform.apply(
         nj.pure(self.model.report), self.train_mesh,
         (tp, tm, ts, ts), (ts, tm), ar,
@@ -189,7 +206,8 @@ class Agent(embodied.Agent):
       with self.train_mesh:
         self._compile_train()
         print('Train cost analysis:')
-        print(self._format_jit_stats(self._train))
+        for fn in self._train_modes.values() if self._train_modes else (self._train,):
+          print(self._format_jit_stats(fn))
         self._compile_report()
         print('Report cost analysis:')
         print(self._format_jit_stats(self._report))
@@ -263,7 +281,9 @@ class Agent(embodied.Agent):
     return carry, acts, outs
 
   @elements.timer.section('jaxagent_train')
-  def train(self, carry, data, train_mode='all'):
+  def train(self, carry, data, train_mode='all', latest=False):
+    if train_mode in self._train_modes:
+      return self._train_player(carry, data, train_mode)
     train_mode = self._canonical_train_mode(train_mode)
     seed = data.pop('seed')
     assert sorted(data.keys()) == sorted(self.spaces.keys()), (
@@ -306,6 +326,11 @@ class Agent(embodied.Agent):
             {k: self.params[k].copy() for k in self.policy_keys},
             self.policy_params_sharding)
 
+    if latest:
+      self.pending_outs = None
+      self.pending_mets = None
+      return carry, self._take_outs(internal.fetch_async(outs)), self._take_outs(internal.fetch_async(mets))
+
     return_outs = {}
     if self.pending_outs:
       return_outs = self._take_outs(self.pending_outs)
@@ -335,6 +360,125 @@ class Agent(embodied.Agent):
 
     return carry, return_outs, return_mets
 
+  def _train_player(self, carry, data, mode):
+    seed = data.pop('seed')
+    assert sorted(data) == sorted(self.spaces)
+    allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
+    dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
+    with self.train_lock:
+      self.params, carry, outs, mets = self._train_modes[mode](
+          dona, allo, seed, carry, data)
+    self.n_updates.increment()
+    # Logging must describe this update, never the previous asynchronous call.
+    return carry, self._take_outs(internal.fetch_async(outs)), self._take_outs(internal.fetch_async(mets))
+
+  def sync_policy(self):
+    """Publish the completed player block before collecting new experience."""
+    if not self.jaxcfg.enable_policy:
+      return
+    with self.train_lock, self.policy_lock:
+      old = self.policy_params
+      self.policy_params = internal.move(
+          {k: self.params[k].copy() for k in self.policy_keys},
+          self.policy_params_sharding)
+      jax.tree.map(lambda x: x.delete(), old)
+      if self.pending_sync:
+        jax.tree.map(lambda x: x.delete(), self.pending_sync)
+        self.pending_sync = None
+
+  def train_many(self, carry, batches, mode):
+    """Bounded compiled sequential updates with fresh data and imagination.
+
+    Only replay outputs cross to the CPU. Latest metrics stay in one device
+    vector until the environment-step logging boundary.
+    """
+    assert batches and len(self.train_devices) == 1
+    if mode not in self._train_group_fns:
+      self._build_train_group(mode, carry, batches[0])
+    stacked = self._stack_batches(*batches)
+    seeds = stacked.pop('seed')
+    allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
+    dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
+    with self.train_lock:
+      self.params, carry, outs, metrics = self._train_group_fns[mode](
+          dona, allo, seeds, carry, stacked, self._group_metrics[mode])
+    self._group_metrics[mode] = metrics
+    self.n_updates.increment(len(batches))
+    if mode == 'all' and self.jaxcfg.enable_policy and not self.pending_sync:
+      self.pending_sync = internal.move(
+          {k: self.params[k].copy() for k in self.policy_keys},
+          self.policy_params_sharding)
+    return carry, self._take_outs(internal.fetch_async(outs))
+
+  def _build_train_group(self, mode, carry, batch):
+    data = {k: v for k, v in batch.items() if k != 'seed'}
+    allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
+    dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
+    raw = self._raw_train if mode == 'all' else self._raw_train_modes[mode]
+    template = raw.eval_shape(dona, allo, batch['seed'], carry, data)[3]
+    keys = sorted(template)
+    assert all(template[k].shape == () for k in keys)
+    sparse = np.asarray([k.startswith(('act_redo/', 'data_diversity/')) or
+                         'grad_redo/' in k for k in keys], bool)
+    def train_group(donated, allocated, seed, carry, data, latest):
+      params = {**donated, **allocated}
+      def update(state, inputs, full=True):
+        params, carry, latest = state
+        data, seed = inputs
+        allocated = {k: v for k, v in params.items() if k in self.policy_keys}
+        donated = {k: v for k, v in params.items() if k not in self.policy_keys}
+        # Reuse the exact single-update JAX graph, including its PRNG behavior.
+        params, carry, outs, metrics = raw(donated, allocated, seed, carry, data)
+        params, carry = jax.lax.optimization_barrier((params, carry))
+        if full:
+          vector = jnp.stack([metrics[k].astype(jnp.float32) for k in keys])
+        else:
+          indices = np.flatnonzero(sparse)
+          values = jnp.stack([metrics[keys[i]].astype(jnp.float32) for i in indices])
+          vector = latest.at[indices].set(values)
+        if getattr(self, 'debug_train_groups', False):
+          outs = dict(outs, debug_metrics=vector)
+        latest = jnp.where(jnp.asarray(sparse) & ~jnp.isfinite(vector), latest, vector)
+        return (params, carry, latest), outs
+      if getattr(self, 'sparse_intermediate_metrics', False) and seed.shape[0] > 1:
+        # Preserve all scheduled sparse analyses while allowing XLA to prune
+        # unused dense summaries from intermediate updates. Peel the final
+        # update so it still returns the exact last loss and gradient stats.
+        prefix = jax.tree.map(lambda x: x[:-1], (data, seed))
+        last = jax.tree.map(lambda x: x[-1], (data, seed))
+        state, before = jax.lax.scan(
+            lambda s, x: update(s, x, full=False), (params, carry, latest), prefix)
+        (params, carry, latest), after = update(state, last)
+        outs = jax.tree.map(lambda a, b: jnp.concatenate([a, b[None]], 0), before, after)
+      else:
+        (params, carry, latest), outs = jax.lax.scan(
+            update, (params, carry, latest), (data, seed))
+      return params, carry, outs, latest
+
+    tp = self.train_params_sharding
+    tm, ts = self.train_mirrored, self.train_sharded
+    allo_s = {k: v for k, v in tp.items() if k in self.policy_keys}
+    dona_s = {k: v for k, v in tp.items() if k not in self.policy_keys}
+    self._train_group_fns[mode] = jax.jit(
+        train_group, in_shardings=(dona_s, allo_s, tm, ts, ts, tm),
+        out_shardings=(tp, ts, ts, tm), donate_argnums=(0,))
+    self._group_metric_keys[mode] = keys
+    restored = self._loaded_group_metrics.get(mode, {})
+    values = restored.get('values') if restored.get('keys') == keys else None
+    self._group_metrics[mode] = internal.device_put(
+        np.full(len(keys), np.nan, np.float32) if values is None else values, tm)
+
+  def latest_train_metrics(self):
+    result = {}
+    for mode, vector in self._group_metrics.items():
+      values = self._take_outs(internal.fetch_async(vector))
+      result.update(zip(self._group_metric_keys[mode], values))
+      step_key = {'all': 'opt', 'wm': 'opt_wm', 'agent': 'opt_agent'}[mode] + '/step/value'
+      output_key = 'opt/updates' if mode == 'all' else f'opt/{mode}/updates'
+      if step_key in self.params:
+        result[output_key] = int(self._take_outs(internal.fetch_async(self.params[step_key])))
+    return result
+
   @elements.timer.section('jaxagent_report')
   def report(self, carry, data):
     seed = data.pop('seed')
@@ -357,7 +501,8 @@ class Agent(embodied.Agent):
         self.n_batches.value += 1
       seed = self._seeds(counter, self.train_mirrored)
       return {**data, 'seed': seed}
-    return embodied.streams.Prefetch(st, fn)
+    amount = int(getattr(getattr(self.config, 'run', None), 'prefetch_batches', 1))
+    return embodied.streams.Prefetch(st, fn, amount=amount)
 
   @elements.timer.section('jaxagent_save')
   def save(self):
@@ -375,6 +520,10 @@ class Agent(embodied.Agent):
     data = {
         'params': params,
         'counters': counters,
+        'train_metrics': {mode: {
+            'keys': self._group_metric_keys[mode],
+            'values': np.array(jax.device_get(vector), copy=True)}
+            for mode, vector in self._group_metrics.items()},
     }
     return data
 
@@ -382,9 +531,21 @@ class Agent(embodied.Agent):
   def load(self, data, regex=None):
     params = data['params']
     assert params
+    self._loaded_group_metrics = data.get('train_metrics', {})
+    for mode, keys in self._group_metric_keys.items():
+      restored = self._loaded_group_metrics.get(mode, {})
+      values = restored.get('values') if restored.get('keys') == keys else None
+      self._group_metrics[mode] = internal.device_put(
+          np.full(len(keys), np.nan, np.float32) if values is None else values,
+          self.train_mirrored)
     with contextlib.ExitStack() as stack:
       stack.enter_context(self.train_lock)
       stack.enter_context(self.policy_lock)
+      if self.pending_sync:
+        jax.tree.map(lambda x: x.delete(), self.pending_sync)
+        self.pending_sync = None
+      self.pending_outs = None
+      self.pending_mets = None
 
       with self.n_updates.lock:
         self.n_updates.value = int(data['counters']['updates'])
@@ -625,7 +786,11 @@ class Agent(embodied.Agent):
     carry = self.init_train(B)
     allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
     dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
-    self._train = self._train.lower(dona, allo, seed, carry, data).compile()
+    if self._train_modes:
+      self._train_modes = {mode: fn.lower(dona, allo, seed, carry, data).compile()
+                           for mode, fn in self._train_modes.items()}
+    else:
+      self._train = self._train.lower(dona, allo, seed, carry, data).compile()
 
   def _compile_report(self):
     B = self.config.batch_size

@@ -86,6 +86,76 @@ python -m scope.viewer --basedir ~/logdir --port 8000
 
 Scalar metrics are also writting as JSONL files.
 
+# Two-player continual DMC experiments
+
+`--run.two_player` selects a schedule relative to the existing `train_ratio`
+clock (a baseline update uses `batch_size * batch_length` replay steps):
+
+| Setting | World-model updates | Agent updates |
+| --- | ---: | ---: |
+| `default` | 1 | 1 (original joint optimizer call) |
+| `wm_as_leader_k` | 1 | k |
+| `agent_as_leader_k` | k | 1 |
+| `best_response_k` | k | k |
+
+Replace `k` with a positive integer, e.g. `wm_as_leader_128`. Nondefault
+schedules finish the WM block before the agent block. Each update samples a
+fresh replay batch, and every agent update computes a fresh imagination
+rollout. WM trains the encoder, RSSM, decoder, reward and continuation heads;
+agent trains policy/value (including replay value), target value and return
+normalizers. The two optimizers have independent state and learning-rate
+clocks. Formal runs prefetch at most eight batches and fuse at most eight
+sequential updates into a compiled scan. Every scan iteration uses its own
+data and latest parameters, and recomputes its imagination rollout. Metrics
+stay on the device until the exact 10k-step logging boundary. The default keeps
+the original joint training behavior. A 256-update RTX 3090 benchmark including
+ReDo checks measured 21.1 to 47.3 agent updates/s (2.25x), with 318 MiB peak
+JAX allocation and 1.85 GiB process RAM. Shared GPU load affects these rates.
+
+The requested 21-run sweep (7 schedules, seeds 1000/2000/3000) can be deployed
+using the `dreamer` conda environment:
+
+```sh
+./auto_script/two_player.sh --plan
+./auto_script/two_player.sh
+```
+
+The launcher uses `walker_run|finger_spin|fish_swim`, priori observations,
+size1m, train ratio 256, 500k steps per task, 10 full cycles (15M total).
+`dog_stand` is deferred. Credentials are read privately from `.env`, `.env.local`
+(`wandb_api` or `WANDB_API_KEY`) or `.env.wandb.local`. W&B project:
+`two_player_dreamer_walker_run|finger_spin|fish_swim_size1m_500k_x10`.
+Groups identify schedules and run names identify seeds; full configuration
+is saved both locally and in W&B.
+
+All parameter reset/regularization mechanisms are disabled. Activation and
+gradient ReDo run in logging mode, with effective/stable ranks, every 100
+updates of the corresponding optimizer. Layer gradients, update magnitudes,
+data diversity, report gradient norms, task performance, replay, timers and
+available resource diagnostics are enabled. Logging occurs strictly every 10k environment steps. W&B explicitly uses
+`env_step` as the common x-axis for all logged metrics. Losses and other
+training statistics use each module's latest update; sparse diagnostics keep
+their latest finite measurement. Reports occur every 20k steps. Checkpoints are saved every 900 seconds,
+at task switches, and at completion.
+
+Each run contains its own logs, replay, checkpoints, JAX/CUDA/W&B caches and
+temporary files. Completed JAX cache entries can be copied into the next run's
+private cache. Controller logs, reference metrics and validation evidence live
+in `logdir/two_player_sweep_20261015/`. The shell entry point works from any
+working directory and preserves arguments and failure exit codes.
+
+The launcher saves its PIDs, GPU allocation and stable W&B IDs in
+`logdir/two_player_sweep_20261015/manifest.json`. It checks memory before launch and never
+signals unrelated processes. It monitors until all selected processes have
+five finite training logs. To resume an exited run, rerun the launcher with
+`--retry-failed` (optionally `--only wm_as_leader_128:1000`); the same logdir
+loads model/optimizer/replay/step and restores the task phase, while
+`WANDB_RESUME=allow` reconnects the same W&B run. `--monitor-only` observes
+existing runs without launching anything. Audit local/remote logs, checkpoints
+and resource headroom with `auto_script/verify_two_player.sh`.
+Before starting pending runs, `--rebalance-pending --plan` can reassign only
+never-started runs using measured WM/agent update costs and current GPU load.
+
 # Tips
 
 - All config options are listed in `dreamerv3/configs.yaml` and you can

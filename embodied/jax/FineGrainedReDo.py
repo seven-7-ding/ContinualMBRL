@@ -209,7 +209,7 @@ class FGReDo(nj.Module):
     def __init__(self):
         self._step = nj.Variable(jnp.zeros, (), jnp.int32, name='step')
 
-    def step(self, activations: Dict) -> Dict:
+    def step(self, activations: Dict, count=None) -> Dict:
         """Analyse post-activation values and optionally reset dormant neurons.
 
         ``activations`` is a {layer_path: activation_tensor} dict collected by
@@ -221,7 +221,7 @@ class FGReDo(nj.Module):
         if self.log_item == 'disabled':
             return {}
 
-        cur = self._step.read()
+        cur = self._step.read() if count is None else count
         in_range = jnp.ones((), bool)
         if self.reset_end > 0:
             in_range = (cur >= self.reset_start) & (cur <= self.reset_end)
@@ -355,14 +355,14 @@ class FGGradientReDo(nj.Module):
         self._step = nj.Variable(jnp.zeros, (), jnp.int32, name='step')
 
     def step(
-        self, params: Dict, grads: Dict
+        self, params: Dict, grads: Dict, count=None
     ) -> Tuple[Dict, Dict, Dict]:
         """Analyse grads; return ``(metrics, new_params, new_grads)``."""
         self._step.write(self._step.read() + 1)
         if self.log_item == 'disabled':
             return {}, params, grads
 
-        cur = self._step.read()
+        cur = self._step.read() if count is None else count
         in_range = jnp.ones((), bool)
         if self.reset_end > 0:
             in_range = (cur >= self.reset_start) & (cur <= self.reset_end)

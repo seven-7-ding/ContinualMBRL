@@ -54,6 +54,9 @@ def main(argv=None):
   for name in parsed.configs:
     config = config.update(configs[name])
   config = elements.Flags(config).parse(other)
+  from embodied.run.two_player import update_counts
+  update_counts(config.run.two_player)
+  config = config.update({'agent.two_player': config.run.two_player != 'default'})
   config = config.update(logdir=(
       config.logdir.format(timestamp=elements.timestamp())))
   print('tasks:', config.task)
@@ -230,12 +233,17 @@ def make_logger(config):
           name=name,
           project=project,
           group=group,
+          config=config.flat,
           dir=wandb_dir)
       if os.environ.get('WANDB_RUN_ID'):
         wandb_kwargs['id'] = os.environ['WANDB_RUN_ID']
       if os.environ.get('WANDB_RESUME'):
         wandb_kwargs['resume'] = os.environ['WANDB_RESUME']
-      outputs.append(elements.logger.WandBOutput(**wandb_kwargs))
+      from embodied.core.wandb_output import StepAlignedWandBOutput
+      output = StepAlignedWandBOutput(**wandb_kwargs)
+      output._wandb.define_metric('env_step')
+      output._wandb.define_metric('*', step_metric='env_step')
+      outputs.append(output)
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
     else:

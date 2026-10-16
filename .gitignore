@@ -13,3 +13,6 @@ task_checklist.md
 codex-prompt.txt
 analysis/
 resume_backups/
+.env
+codex-executor.log
+codex-cli-executor.log

@@ -119,7 +119,19 @@ class Agent(embodied.jax.Agent):
     opt, lr_schedule = self._make_opt(**config.opt)
     self.opt = embodied.jax.Optimizer(
         self.modules, opt, lr_schedule=lr_schedule, summary_depth=1,
+        log_gradients=getattr(config, 'log_gradients', False),
         name='opt')
+    self.two_player = bool(getattr(config, 'two_player', False))
+    if self.two_player:
+      # Independent clocks and Adam states; frozen players never take a step.
+      self.opt_wm = embodied.jax.Optimizer(
+          self.modules[:5], *self._make_opt(**config.opt),
+          log_gradients=getattr(config, 'log_gradients', False),
+          redo_per_optimizer=True, name='opt_wm')
+      self.opt_agent = embodied.jax.Optimizer(
+          self.modules[5:], *self._make_opt(**config.opt),
+          log_gradients=getattr(config, 'log_gradients', False),
+          redo_per_optimizer=True, name='opt_agent')
 
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
@@ -210,22 +222,38 @@ class Agent(embodied.jax.Agent):
           enc=enc_entry, dyn=dyn_entry, dec=dec_entry)))
     return carry, act, out
 
-  def train(self, carry, data):
+  def train(self, carry, data, train_mode='all'):
+    if self.two_player and train_mode == 'all':
+      # Initialize both optimizer trees through the existing init entry point.
+      self.train(carry, data, 'wm')
+      return self.train(carry, data, 'agent')
     carry, obs, prevact, stepid = self._apply_replay_context(carry, data)
 
-    metrics, (carry, entries, outs, mets) = self.opt(
+    optimizer = {'wm': getattr(self, 'opt_wm', self.opt),
+                 'agent': getattr(self, 'opt_agent', self.opt), 'all': self.opt}[train_mode]
+    metrics, (carry, entries, outs, mets) = optimizer(
         self.loss, carry, obs, prevact, training=True, has_aux=True,
+        train_mode=train_mode,
         gradient_redo=self.grad_redo, wsc_controller=self.wsc)
+    if train_mode != 'all':
+      metrics = {k.replace(f'opt_{train_mode}/', f'opt/{train_mode}/'): v
+                 for k, v in metrics.items()}
 
-    should_analyze_data = self._should_analyze_data_diversity(training=True)
+    should_analyze_data = self._should_analyze_data_diversity(
+        training=True, optimizer=optimizer)
     if self.data_diversity_enabled:
       data_action = self._next_actions(prevact)
-      mets.update(self._real_data_diversity(
-          obs, outs['repfeat'], data_action, should_analyze_data))
-      mets.update(self._imag_data_diversity(
-          jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
-          jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
-          should_analyze_data))
+      real_diversity = self._real_data_diversity(
+          obs, outs['repfeat'], data_action, should_analyze_data)
+      if train_mode == 'agent':
+        real_diversity = {k.replace('data_diversity/', 'data_diversity/agent/'): v
+                          for k, v in real_diversity.items()}
+      mets.update(real_diversity)
+      if 'imgfeat' in outs:
+        mets.update(self._imag_data_diversity(
+            jax.tree.map(lambda x: x[:, :-1], outs['imgfeat']),
+            jax.tree.map(lambda x: x[:, :-1], outs['imgact']),
+            should_analyze_data))
 
     if self.wsc and self.wsc.needs_activations:
       _cbp_acts = {}
@@ -297,10 +325,18 @@ class Agent(embodied.jax.Agent):
       finally:
         nn.NORM_CALLBACK = _old_norm_cb
         nn.LAYER_CALLBACK = _old_cb
-      mets.update(self.act_redo.step(_acts))
+      act_metrics = self.act_redo.step(
+          _acts, count=optimizer.step.read() if train_mode != 'all' else None)
+      if train_mode != 'all':
+        modules = self.modules[:5] if train_mode == 'wm' else self.modules[5:]
+        prefixes = tuple(module.path.replace('/', '_') + '_' for module in modules)
+        act_metrics = {k: v for k, v in act_metrics.items()
+                       if k.rsplit('/', 1)[-1].startswith(prefixes)}
+      mets.update(act_metrics)
 
     metrics.update(mets)
-    self.slowval.update()
+    if train_mode != 'wm':
+      self.slowval.update()
     outs = {}
     if self.config.replay_context:
       updates = elements.tree.flatdict(dict(
@@ -314,7 +350,7 @@ class Agent(embodied.jax.Agent):
     carry = (*carry, {k: data[k][:, -1] for k in self.act_space})
     return carry, outs, metrics
 
-  def loss(self, carry, obs, prevact, training):
+  def loss(self, carry, obs, prevact, training, train_mode='all'):
     data_aug_mode = self.data_aug_mode if training else 'disabled'
     raw_obs = obs
     if data_aug_mode != 'disabled':
@@ -354,6 +390,15 @@ class Agent(embodied.jax.Agent):
     B, T = reset.shape
     shapes = {k: v.shape for k, v in losses.items()}
     assert all(x == (B, T) for x in shapes.values()), ((B, T), shapes)
+
+    if train_mode == 'wm':
+      metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
+      loss = sum(v.mean() * self.scales[k] for k, v in losses.items())
+      return loss, ((enc_carry, dyn_carry, dec_carry),
+                    (enc_entries, dyn_entries, dec_entries),
+                    {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}, metrics)
+
+    wm_metric_names = tuple(metrics)
 
     # Imagination
     K = min(self.config.imag_last or T, T)
@@ -419,6 +464,11 @@ class Agent(embodied.jax.Agent):
 
     assert set(losses.keys()) == set(self.scales.keys()), (
         sorted(losses.keys()), sorted(self.scales.keys()))
+    if train_mode == 'agent':
+      losses = {k: v for k, v in losses.items() if k in ('policy', 'value', 'repval')}
+      # Observing a frozen WM for imagination is not a WM training update.
+      for key in wm_metric_names:
+        metrics.pop(key, None)
     metrics.update({f'loss/{k}': v.mean() for k, v in losses.items()})
     loss = sum([v.mean() * self.scales[k] for k, v in losses.items()])
 
@@ -455,11 +505,11 @@ class Agent(embodied.jax.Agent):
   def _matrix(self, x):
     return sg(f32(x)).reshape((-1, x.shape[-1]))
 
-  def _should_analyze_data_diversity(self, training):
+  def _should_analyze_data_diversity(self, training, optimizer=None):
     if not training or not self.data_diversity_enabled:
       return jnp.array(False)
     redo_cfg = self.config.redo
-    cur = self.opt.step.read()
+    cur = (optimizer or self.opt).step.read()
     in_range = jnp.ones((), bool)
     if redo_cfg.reset_end > 0:
       in_range = (cur >= redo_cfg.reset_start) & (cur <= redo_cfg.reset_end)
