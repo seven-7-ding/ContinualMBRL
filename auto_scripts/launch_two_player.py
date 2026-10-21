@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTROL = ROOT / 'logdir/two_player_sweep_20261015'
 sys.path.insert(0, str(ROOT))
 from tools.inspect_wandb_reference import credentials
+from tools import wandb_transport
 from embodied.run.two_player import update_counts
 
 PROJECT = 'two_player_dreamer_walker_run|finger_spin|fish_swim_size1m_500k_x10'
@@ -81,6 +82,7 @@ def log_interval(job):
 
 
 def command(job):
+  optimized = job.get('performance_profile') in ('bounded_replay_v1','bounded_replay_v2')
   return [sys.executable, '-B', '-u', str(ROOT / 'dreamerv3/main.py'),
       '--configs', 'continual_dmc_priori', 'size1m',
       '--task', TASK, '--seed', str(job['seed']), '--logdir', job['logdir'],
@@ -101,12 +103,13 @@ def command(job):
       '--agent.report_gradnorms', 'True', '--logger.outputs', 'jsonl', 'scope', 'wandb',
       '--logger.filter', 'score|fps|loss/|schedule/',
       '--run.usage.psutil', 'True', '--run.usage.nvsmi', 'True',
-      '--run.usage.gc', 'True', '--run.usage.malloc', 'True',
+      '--run.usage.gc', 'True', '--run.usage.malloc', str(not optimized),
       '--jax.prealloc', 'False', '--jax.memory_fraction', '0.18',
       '--jax.precompile', 'False',
       '--jax.profiler', 'False', '--egl_device', str(job['gpu']),
       '--replay.size', '500000', '--replay.chunksize', '1024',
-      '--replay.cache_chunks', '1024']
+      '--replay.cache_chunks', '0' if optimized else '1024',
+      '--replay.cache_bytes', str(2 * 1024**3 if optimized else 0)]
 
 
 @functools.lru_cache(None)
@@ -175,18 +178,29 @@ def plan(existing=None):
           'baseline_gpu': gpus, 'baseline_ram_available_gib': available_ram_gib()}
 
 
-def launch(job):
+def launch(job, resume='allow'):
   import psutil
+  if job.get('user_paused'):
+    return False
+  stop_plan = CONTROL/'watchdog/scheduled_stop_plan.json'
+  if stop_plan.exists():
+    intent = json.loads(stop_plan.read_text())
+    if (intent.get('enabled') and job['wandb_id'] in intent.get('run_ids',[]) and
+        time.time() >= intent['quiesce_at']):
+      return False
   g = next(g for g in gpu_stats() if g['index'] == job['gpu'])
   if g['total'] - g['used'] < 6656 or available_ram_gib() < 80:
     return False
-  env = credentials()
-  env.update(WANDB_RUN_ID=job['wandb_id'], WANDB_RESUME='allow', WANDB_MODE='online',
+  env = wandb_transport.sdk_environment(credentials())
+  env.update(WANDB_RUN_ID=job['wandb_id'], WANDB_RESUME=resume, WANDB_MODE='online',
       WANDB_SILENT='true',
+      CONTINUALMBRL_REPLAY_PROFILE=job.get('performance_profile','baseline'),
       CUDA_VISIBLE_DEVICES=str(job['gpu']), MUJOCO_GL='egl', PYOPENGL_PLATFORM='egl',
       OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1',
       NUMEXPR_NUM_THREADS='1', XLA_PYTHON_CLIENT_PREALLOCATE='false',
       PYTHONDONTWRITEBYTECODE='1')
+  env['CONTINUALMBRL_STOP_PLAN'] = str(stop_plan)
+  env['CONTINUALMBRL_STOP_PROTOCOL'] = 'checkpoint_stop_v1'
   env['PATH'] = '/usr/local/cuda/bin:' + env.get('PATH', '')
   env['XLA_FLAGS'] = '--xla_cpu_multi_thread_eigen=false'
   directory = Path(job['logdir'])
@@ -289,7 +303,8 @@ def main():
     for job in state['jobs']:
       print(job['setting'], job['seed'], 'gpu', job['gpu'])
     return
-  selected = [j for j in state['jobs'] if not args.only or args.only == f"{j['setting']}:{j['seed']}"]
+  selected = [j for j in state['jobs'] if not j.get('user_paused') and
+      (not args.only or args.only == f"{j['setting']}:{j['seed']}")]
   # Exercise the original joint-update path early, then prioritize heavy jobs.
   selected.sort(key=lambda j: (j['setting'], j['seed']) != ('default', 1000))
   while True:

@@ -8,6 +8,7 @@ from embodied.jax import wsc as wsc_lib
 from embodied.jax.internal import stats
 from .two_player import update_counts, update_modes
 from .diagnostics import make_usage
+from .scheduled_stop import ScheduledStop
 import numpy as np
 
 
@@ -427,7 +428,8 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
   driver.on_step(trainfn)
   driver.reset(agent.init_policy)
   
-  while step < args.steps:
+  stop_control = ScheduledStop(logdir)
+  while step < args.steps and not stop_control.due():
     if next_reset_step[0] is not None:
       while step >= next_reset_step[0]:
         periodic_reset()
@@ -519,5 +521,6 @@ def continual_train(make_agent, make_replay, make_env, make_stream, make_logger,
       cp.save()
 
   cp.save()
+  stop_control.saved(cp, step.value)
   driver.close()
   logger.close()

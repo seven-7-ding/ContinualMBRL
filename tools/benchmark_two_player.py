@@ -80,6 +80,37 @@ def main():
     data.append(d)
   carry=agent.init_train(c.batch_size)
   initial=agent.save()
+  if '--disk-pipeline' in sys.argv:
+    from tools.benchmark_replay_training import benchmark
+    benchmark(agent, c.update({'run.prefetch_batches': 8}), directory, data, carry)
+    return
+  if '--pipeline-diagnostics' in sys.argv:
+    # Isolated diagnostic: never reads/writes production checkpoints. Keep the
+    # optimizer minibatch and sequential fused-8 update graph unchanged.
+    import tracemalloc
+    import psutil
+    process = psutil.Process()
+    result = {'input_bytes_per_batch': sum(x.nbytes for x in jax.tree.leaves(data[0])),
+              'cpu_affinity': process.cpu_affinity(), 'modes': {}}
+    for mode in ('wm', 'agent'):
+      carry, _ = agent.train_many(carry, data[:8], mode)
+      jax.block_until_ready(agent.params)
+      measurements = []
+      for traced in (False, True, False):
+        tracemalloc.start() if traced else tracemalloc.stop()
+        begin = time.perf_counter()
+        for _ in range(8):
+          carry, _ = agent.train_many(carry, data[:8], mode)
+        jax.block_until_ready(agent.params)
+        measurements.append({'tracemalloc': traced,
+            'updates_per_second': 64 / (time.perf_counter() - begin),
+            'rss_gib': process.memory_info().rss / 2**30,
+            'jax_memory': agent.train_devices[0].memory_stats()})
+        print(mode, measurements[-1], flush=True)
+      result['modes'][mode] = measurements
+      tracemalloc.stop()
+      (directory/'pipeline_diagnostics.json').write_text(json.dumps(result, indent=2)+'\n')
+    return
   if '--timing-only' in sys.argv:
     print('Warm fused-8 load comparison',flush=True)
     carry,_=agent.train_many(carry,data[:8],'agent')

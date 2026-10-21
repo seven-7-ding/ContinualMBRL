@@ -15,7 +15,7 @@ class Replay:
   def __init__(
       self, length, capacity=None, directory=None, chunksize=1024,
       online=False, selector=None, save_wait=False, name='unnamed', seed=0,
-      cache_chunks=0):
+      cache_chunks=0, cache_bytes=0):
 
     self.length = length
     self.capacity = capacity
@@ -28,7 +28,13 @@ class Replay:
     self.refs = {}
     self.refs_lock = threading.RLock()
     self.cache_chunks = int(cache_chunks or 0)
+    # Limits decoded historical chunk payload, not total process RSS. Active
+    # append chunks and bounded in-flight samples can temporarily exceed it.
+    self.cache_bytes = int(cache_bytes or 0)
+    assert self.cache_chunks >= 0 and self.cache_bytes >= 0
     self.loaded = OrderedDict()
+    self.loaded_bytes = 0
+    self.cache_lock = threading.RLock()
 
     self.items = {}
     self.fifo = deque()
@@ -52,7 +58,8 @@ class Replay:
       self.directory = None
     self.save_wait = save_wait
 
-    self.metrics = {'samples': 0, 'inserts': 0, 'updates': 0}
+    self.metrics = {'samples': 0, 'inserts': 0, 'updates': 0,
+                    'cache_misses': 0, 'cache_writebacks': 0}
 
   def __len__(self):
     return len(self.items)
@@ -65,11 +72,14 @@ class Replay:
         'items': len(self.items),
         'chunks': len(self.chunks),
         'loaded_chunks': sum(x.data is not None for x in self.chunks.values()),
+        'cache_limit_gb': self.cache_bytes / (1024 ** 3),
         'streams': len(self.streams),
         'ram_gb': chunk_nbytes / (1024 ** 3),
         'inserts': m['inserts'],
         'samples': m['samples'],
         'updates': m['updates'],
+        'cache_misses': m['cache_misses'],
+        'cache_writebacks': m['cache_writebacks'],
         'replay_ratio': ratio(self.length * m['samples'], m['inserts']),
     }
     for key in self.metrics:
@@ -89,7 +99,9 @@ class Replay:
 
       # Clear all data structures
       self.chunks.clear()
-      self.loaded.clear()
+      with self.cache_lock:
+        self.loaded.clear()
+        self.loaded_bytes = 0
       with self.refs_lock:
         self.refs.clear()
       self.items.clear()
@@ -231,6 +243,8 @@ class Replay:
       if self.refs[chunkid] < 1:
         del self.refs[chunkid]
         chunk = self.chunks.pop(chunkid)
+        with self.cache_lock:
+          self.loaded_bytes -= self.loaded.pop(chunkid, 0)
         if chunk.succ in self.refs:
           self.refs[chunk.succ] -= 1
 
@@ -258,6 +272,12 @@ class Replay:
         return seq
 
   def _setseq(self, chunkid, index, values):
+    # A checkpoint may replace completed chunks' overallocated arrays. Keep
+    # recurrent-state writes on the same side of that replacement and save.
+    with self.cache_lock:
+      return self._setseq_locked(chunkid, index, values)
+
+  def _setseq_locked(self, chunkid, index, values):
     length = len(next(iter(values.values())))
     chunk = self._ensure_chunk_data(chunkid)
     available = chunk.length - index
@@ -310,23 +330,27 @@ class Replay:
     return False
 
   def _ensure_chunk_data(self, chunkid):
-    chunk = self.chunks[chunkid]
-    if chunk.data is None:
-      if not self.directory:
-        raise KeyError(chunkid)
-      loaded = chunklib.Chunk.load(self.directory / chunk.filename, error='none')
-      if loaded is None:
-        raise KeyError(chunkid)
-      chunk.data = loaded.data
-      chunk.saved = True
-    self._touch_chunk(chunk)
-    return chunk
+    with self.cache_lock:
+      chunk = self.chunks[chunkid]
+      if chunk.data is None:
+        if not self.directory:
+          raise KeyError(chunkid)
+        loaded = chunklib.Chunk.load(self.directory / chunk.filename, error='none')
+        if loaded is None:
+          raise KeyError(chunkid)
+        chunk.data = loaded.data
+        chunk.saved = True
+        self.metrics['cache_misses'] += 1
+      self._touch_chunk(chunk)
+      return chunk
 
   def _touch_chunk(self, chunk):
     if chunk.data is None:
       return
-    self.loaded.pop(chunk.uuid, None)
-    self.loaded[chunk.uuid] = None
+    with self.cache_lock:
+      self.loaded_bytes -= self.loaded.pop(chunk.uuid, 0)
+      self.loaded[chunk.uuid] = chunk.nbytes
+      self.loaded_bytes += self.loaded[chunk.uuid]
 
   def _mark_dirty(self, chunk):
     if not self.directory:
@@ -342,26 +366,29 @@ class Replay:
       self.saved.add(chunk.uuid)
       return
     chunk.save(self.directory)
+    self.metrics['cache_writebacks'] += 1
     self.saved.add(chunk.uuid)
 
   def _evict_chunks(self):
-    if not self.cache_chunks or not self.directory:
+    if not (self.cache_chunks or self.cache_bytes) or not self.directory:
       return
-    current = {chunkid for chunkid, _ in self.current.values()}
-    while len(self.loaded) > self.cache_chunks:
-      chunkid = next(iter(self.loaded))
-      if chunkid in current:
-        self.loaded.move_to_end(chunkid)
-        if all(uuid in current for uuid in self.loaded):
-          break
-        continue
-      chunk = self.chunks.get(chunkid)
-      self.loaded.pop(chunkid, None)
-      if chunk is None or chunk.data is None:
-        continue
-      self._save_chunk_now(chunk)
-      if chunk.uuid in self.saved:
-        chunk.data = None
+    with self.cache_lock:
+      current = {chunkid for chunkid, _ in self.current.copy().values()}
+      while ((self.cache_chunks and len(self.loaded) > self.cache_chunks) or
+             (self.cache_bytes and self.loaded_bytes > self.cache_bytes)):
+        chunkid = next(iter(self.loaded))
+        if chunkid in current:
+          self.loaded.move_to_end(chunkid)
+          if all(uuid in current for uuid in self.loaded):
+            break
+          continue
+        chunk = self.chunks.get(chunkid)
+        self.loaded_bytes -= self.loaded.pop(chunkid, 0)
+        if chunk is None or chunk.data is None:
+          continue
+        self._save_chunk_now(chunk)
+        if chunk.uuid in self.saved:
+          chunk.data = None
 
   # def dataset(self, batch, length=None, consec=None, prefix=0, report=False):
   #   length = length or self.length
@@ -423,7 +450,7 @@ class Replay:
   @elements.timer.section('replay_save')
   def save(self):
     if self.directory:
-      with self.rwlock.writing:
+      with self.rwlock.writing, self.cache_lock:
         for worker, (chunkid, _) in self.current.items():
           chunk = self.chunks[chunkid]
           if chunk.length > 0:
@@ -436,7 +463,7 @@ class Replay:
             self.saved.add(chunk.uuid)
             continue
           promises.append(self.workers.submit(chunk.save, self.directory))
-        if self.save_wait or self.cache_chunks:
+        if self.save_wait or self.cache_chunks or self.cache_bytes:
           [promise.result() for promise in promises]
           self.saved.update(chunk.uuid for chunk in self.chunks.values()
                             if chunk.saved)
@@ -469,7 +496,7 @@ class Replay:
         break
 
     filenames = [directory / x for x in names_ondisk[:numchunks]]
-    if self.cache_chunks:
+    if self.cache_chunks or self.cache_bytes:
       load = bind(chunklib.Chunk.metadata, validate=True, error='none')
       with ThreadPoolExecutor(16, 'replay_metadata_loader') as pool:
         chunks = [x for x in pool.map(load, filenames) if x]
@@ -500,6 +527,7 @@ class Replay:
 
   @elements.timer.section('complete_chunk')
   def _complete(self, chunk, worker):
+    self._compact_chunk(chunk)
     succ = chunklib.Chunk(self.chunksize)
     with self.refs_lock:
       self.refs[chunk.uuid] -= 1
@@ -509,6 +537,18 @@ class Replay:
     chunk.succ = succ.uuid
     self._touch_chunk(succ)
     return succ
+
+  def _compact_chunk(self, chunk):
+    # Checkpoints seal partially filled append chunks. Retaining the full
+    # allocation for every stream otherwise spends the byte cache on padding.
+    # Copies release the backing allocations; slices alone retain that memory.
+    if not (self.cache_bytes and chunk.data and 0 < chunk.length < chunk.size):
+      return
+    with self.cache_lock:
+      chunk.data = {key: value[:chunk.length].copy()
+                    for key, value in chunk.data.items()}
+      chunk.size = chunk.length
+      self._touch_chunk(chunk)
 
   def _numitems(self, chunks):
     chunks = [x.filename if hasattr(x, 'filename') else x for x in chunks]

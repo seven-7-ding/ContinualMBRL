@@ -266,6 +266,7 @@ def make_replay(config, folder, mode='train'):
       length=length, capacity=int(capacity), online=config.replay.online,
       chunksize=config.replay.chunksize, directory=directory,
       cache_chunks=config.replay.cache_chunks,
+      cache_bytes=config.replay.cache_bytes,
       seed=stable_seed(config.seed, config.replica, 10, mode == 'eval'))
 
   if config.replay.fracs.uniform < 1 and mode == 'train':

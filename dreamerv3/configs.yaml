@@ -49,6 +49,7 @@ defaults:
     recexp: 1.0
     chunksize: 1024
     cache_chunks: 0
+    cache_bytes: 0  # Optional decoded replay RAM budget; active write chunks are exempt.
 
   run:
     steps: 1e10
